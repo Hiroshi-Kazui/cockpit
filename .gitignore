@@ -1,0 +1,15 @@
+node_modules/
+out/
+dist/
+dist-electron/
+*.log
+.DS_Store
+Thumbs.db
+test-results/
+playwright-report/
+blob-report/
+.e2e-userdata/
+
+# Local tooling / exploration artifacts (not project source)
+.playwright-mcp/
+/scene*.png

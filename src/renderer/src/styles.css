@@ -1,0 +1,797 @@
+/* Base layout styles for the pane grid and terminal surfaces. */
+:root {
+  color-scheme: dark;
+  --bg: #1e1e1e;
+  --bg-panel: #252526;
+  --border: #3c3c3c;
+  --fg: #d4d4d4;
+  --accent: #007acc;
+  --error: #f14c4c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, Segoe UI, sans-serif;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.app-header h1 {
+  font-size: 14px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.layout-switcher {
+  display: flex;
+  gap: 4px;
+}
+
+.layout-switcher__button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.layout-switcher__button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+/* M5: opens the read-only past-session browser (SessionBrowser.tsx). */
+.app-header__archive-button {
+  margin-left: auto;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.banner {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.banner--error {
+  background: rgba(241, 76, 76, 0.15);
+  color: var(--error);
+  border-bottom: 1px solid var(--error);
+}
+
+.pane-grid {
+  flex: 1;
+  display: grid;
+  gap: 4px;
+  padding: 4px;
+  min-height: 0;
+}
+
+.pane-grid--single {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+
+.pane-grid--split2 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr;
+}
+
+.pane-grid--split4 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.pane-slot {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  background: black;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  /* M4: containing block for .dialog-backdrop (position:absolute; inset:0), so the purpose-input
+     dialog overlays exactly this pane rather than the whole window. */
+  position: relative;
+}
+
+/* Highlight the pane that currently holds keyboard focus so the active input target is unambiguous
+   when multiple panes are visible (spec §4.2 usability: input destination must be clear). */
+.pane:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.pane-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.pane-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* M4 (TD-7): "完了済み" marker next to a completed purpose's title, kept in the still-running header
+   (a completed purpose's running session keeps showing its title/purpose until the pty itself stops). */
+.pane-title__badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: #1e1e1e;
+  background: #569cd6;
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+/* M4 (spec §4.2/§4.6): the active/last-known purpose's original text, shown below the header so the
+   generated title (primary heading) and the user's own words both stay visible. */
+.pane-purpose {
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #b8b8b8;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* M4 FIX (usability #2): visible (not hover-only) call-to-action shown while a pane is running with an
+   active purpose whose text is still undecided (spec §4.2) -- without this, an empty purpose looked like
+   a stuck/broken title generation rather than "type your first message and it becomes the purpose".
+   Intentionally the same italic/secondary treatment as .pane-purpose's own text color, just emphasized
+   with italics so it reads as guidance rather than data. */
+.pane-purpose__hint {
+  font-style: italic;
+  color: #b8b8b8;
+}
+
+.pane-cwd {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* #b8b8b8 on --bg-panel (#252526) is ~7.7:1, comfortably above WCAG AA 4.5:1 (was #9d9d9d). */
+  color: #b8b8b8;
+}
+
+.pane-header button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.pane-header button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.pane-error {
+  padding: 4px 8px;
+  background: rgba(241, 76, 76, 0.15);
+  color: var(--error);
+  font-size: 12px;
+}
+
+/* Subdued warning indicator for non-fatal archive-sync issues (M2 FIX major #4) -- deliberately less
+   alarming than .pane-error (which signals the pane itself is unusable): amber, lower-contrast text,
+   no role="alert" (uses role="status" in Pane.tsx so it doesn't interrupt screen readers). */
+.pane-warning {
+  padding: 4px 8px;
+  background: rgba(212, 163, 45, 0.12);
+  color: #d4a32d;
+  font-size: 11px;
+}
+
+/* M4 FIX (usability #3): wrapper is the flex-filling child of .pane; .pane-terminal and the resume
+   overlay (below) are both absolutely positioned to fill it, so the overlay can sit visually on top of
+   the (empty, not-yet-running) terminal without unmounting/remounting the xterm.js instance. */
+.pane-terminal-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.pane-terminal {
+  position: absolute;
+  inset: 0;
+  padding: 4px;
+}
+
+/* M4 FIX (usability #3, TD-7): the "再開待ち" affordance shown centered over a pane's terminal area
+   when it has an active purpose but no running pty -- mirrors mocks/cockpit-storyboard.html's resume
+   scene look (.resume-wrap) so a purpose awaiting one-click restore is never mistaken for an
+   unconfigured/idle pane. */
+.pane-resume-overlay {
+  position: absolute;
+  inset: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 0 18px;
+  background: rgba(30, 30, 30, 0.92);
+  border-radius: 4px;
+}
+
+.pane-resume-overlay__badge {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6e6e6;
+}
+
+.pane-resume-overlay__title {
+  font-size: 12px;
+  color: #b8b8b8;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-resume-overlay__hint {
+  font-size: 11px;
+  color: #9d9d9d;
+}
+
+.pane-resume-overlay__hint code {
+  font-family: Consolas, 'Cascadia Mono', monospace;
+}
+
+.pane-resume-overlay__button {
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 22px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: rgba(0, 122, 204, 0.16);
+  color: #7fc4f2;
+  cursor: pointer;
+}
+
+.pane-resume-overlay__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* M2 minimal telemetry verification line (plain text only -- cumulative archived tokens, spec §4.4/§5.
+   Deliberately secondary/small: the *primary* per-pane usage indicator is the context-consumption
+   gauge above (.context-gauge, M3 spec §4.5), not this line. */
+.pane-telemetry {
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  /* Matches .pane-cwd's contrast fix: #b8b8b8 on --bg-panel (#252526) is ~7.7:1 (WCAG AA), was #9d9d9d. */
+  color: #b8b8b8;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---- M3: pane context-consumption gauge (spec §4.5, primary per-pane usage indicator) ---- */
+.context-gauge {
+  width: 140px;
+  flex: 0 0 auto;
+  font-size: 10px;
+}
+
+.context-gauge__label {
+  display: flex;
+  justify-content: space-between;
+  /* Matches .pane-cwd/.pane-telemetry's contrast fix: #b8b8b8 on --bg-panel (#252526) is ~7.7:1 (WCAG
+     AA), was #9d9d9d (M3 FIX iteration 2, minor #6: unify contrast across pane-header text). */
+  color: #b8b8b8;
+  margin-bottom: 2px;
+}
+
+.context-gauge__pct {
+  font-weight: 700;
+}
+
+/* M3 FIX iteration 2 (major #1): always-visible "残り N%" readout so the "until compact" meaning of
+   this gauge is never hover-only (a hidden meaning previously led a real user to misread this as
+   cumulative token count). Visually secondary to .context-gauge__label/__pct, and kept distinct from the
+   separate cumulative-token line in .pane-telemetry below the pane header. */
+.context-gauge__remaining {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+  font-size: 9px;
+  color: #b8b8b8;
+}
+
+.context-gauge__pct--green {
+  color: #89d185;
+}
+
+.context-gauge__pct--orange {
+  color: #d4a32d;
+}
+
+.context-gauge__pct--red {
+  color: #f48771;
+}
+
+.context-gauge__bar {
+  height: 6px;
+  border-radius: 4px;
+  background: #0e0e0e;
+  border: 1px solid #000;
+  overflow: hidden;
+}
+
+.context-gauge__fill {
+  display: block;
+  height: 100%;
+}
+
+.context-gauge__fill--green {
+  background: #89d185;
+}
+
+.context-gauge__fill--orange {
+  background: #d4a32d;
+}
+
+.context-gauge__fill--red {
+  background: #f48771;
+}
+
+/* ---- M3: status bar (spec §4.5) ---- */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 12px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.status-bar__waiting {
+  color: #9d9d9d;
+}
+
+.status-bar__badge {
+  color: #1e1e1e;
+  background: #dcdcaa;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.status-gauge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-gauge__label {
+  color: #b8b8b8;
+}
+
+.status-gauge__bar {
+  width: 120px;
+  height: 8px;
+  border-radius: 5px;
+  background: #2a2a2a;
+  border: 1px solid #000;
+  overflow: hidden;
+}
+
+.status-gauge__fill {
+  display: block;
+  height: 100%;
+}
+
+/* M3 FIX iteration 2 (minor #5): fill color now danger-codes remaining quota (remainingPercentageColor)
+   instead of double-encoding measured-vs-estimated, which is already carried by the "推定" badge. Colors
+   match mocks/cockpit-storyboard.html's gfill-ok/gfill-mid/gfill-low. */
+.status-gauge__fill--ok {
+  background: #4ec9b0;
+}
+
+.status-gauge__fill--mid {
+  background: #dcdcaa;
+}
+
+.status-gauge__fill--low {
+  background: #f48771;
+}
+
+.status-gauge__value {
+  color: #e6e6e6;
+  font-weight: 600;
+}
+
+.status-gauge__reset {
+  color: #9d9d9d;
+  font-size: 10.5px;
+}
+
+.status-bar__plan {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #b8b8b8;
+}
+
+.status-bar__plan select,
+.status-bar__plan input {
+  background: black;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.status-bar__plan input[type='number'] {
+  width: 110px;
+}
+
+.status-bar__error {
+  color: var(--error);
+}
+
+/* M3 FIX iteration 2 (minor #7): inline validation message for an invalid custom-limit input, so a
+   rejected edit is explained rather than silently discarded. */
+.status-bar__field-error {
+  color: var(--error);
+  font-size: 10.5px;
+}
+
+/* ---- M4: purpose-input dialog (spec §4.2 step 1) ---- */
+.dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+}
+
+.dialog {
+  width: 420px;
+  max-width: calc(100% - 32px);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.dialog h3 {
+  margin: 0;
+  padding: 12px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  background: #2d2d30;
+}
+
+.dialog-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dialog-body label {
+  font-size: 11px;
+  color: #b8b8b8;
+}
+
+/* M4 FIX (usability #5): discoverability hint for the Ctrl/Cmd+Enter confirm / Esc cancel shortcuts.
+   M4 FIX iteration 2 (minor #4): #7a7a7a on --bg-panel (#252526) was ~3.4:1, below WCAG AA's 4.5:1 for
+   normal-size text. #b8b8b8 matches .pane-cwd/.pane-telemetry's already-verified ~7.7:1. */
+.dialog-body__hint {
+  margin-left: 6px;
+  color: #b8b8b8;
+  font-weight: 400;
+}
+
+.dialog-body textarea {
+  width: 100%;
+  height: 72px;
+  resize: none;
+  background: black;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 13px;
+  padding: 8px 10px;
+  font-family: inherit;
+}
+
+.dialog-body input {
+  width: 100%;
+  background: black;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: #b8b8b8;
+  font-size: 12px;
+  padding: 6px 9px;
+}
+
+.dialog-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.dialog-row button {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: #2d2d30;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.dialog-row__primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+  font-weight: 700;
+}
+
+.dialog-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ---- M5: past-session browser (spec §4.4, read-only) ---- */
+.session-browser-backdrop {
+  position: fixed;
+  z-index: 20;
+}
+
+.session-browser {
+  width: min(920px, calc(100% - 48px));
+  height: min(640px, calc(100% - 48px));
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-browser__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #2d2d30;
+}
+
+.session-browser__header h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.session-browser__header button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 2px 8px;
+}
+
+.session-browser__body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.session-browser__list-pane {
+  width: 320px;
+  flex: 0 0 auto;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.session-browser__list-pane input {
+  margin: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.session-browser__list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 10px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.session-browser__item {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--fg);
+  padding: 6px 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+
+.session-browser__item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.session-browser__item--active {
+  border-color: var(--accent);
+  background: rgba(0, 122, 204, 0.15);
+}
+
+.session-browser__item-title {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-browser__item-meta,
+.session-browser__item-cwd {
+  font-size: 10.5px;
+  color: #b8b8b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-browser__empty,
+.session-browser__hint {
+  padding: 12px;
+  font-size: 12px;
+  color: #9d9d9d;
+}
+
+.session-browser__detail-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.session-browser__transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Keyboard-reachable scrollable region: make the focused/scrollable target unambiguous,
+   matching the accent treatment used for .pane:focus-within. Only shown for keyboard focus
+   so mouse-driven scrolling is unaffected. */
+.session-browser__transcript:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.session-turn {
+  max-width: 90%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.session-turn--user {
+  align-self: flex-end;
+  background: rgba(0, 122, 204, 0.18);
+  border: 1px solid rgba(0, 122, 204, 0.4);
+}
+
+.session-turn--assistant {
+  align-self: flex-start;
+  background: #2d2d30;
+  border: 1px solid var(--border);
+}
+
+.session-turn__role {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: #9d9d9d;
+  margin-bottom: 3px;
+}
+
+.session-browser__error {
+  color: var(--error);
+  padding: 8px 10px;
+  font-size: 11px;
+}
+
+/* M5 FIX (deferred item 2): explicit "older N turns omitted" banner -- never silently truncate a
+   transcript view. Informational, not an error, so it gets its own (accent-toned) treatment rather than
+   reusing .session-browser__error's red. */
+.session-browser__notice {
+  color: var(--accent);
+  padding: 6px 10px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+}
