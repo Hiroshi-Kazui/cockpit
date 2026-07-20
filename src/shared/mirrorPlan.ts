@@ -111,6 +111,16 @@ export type ResumeVerificationRange =
  * `destSize` exceeding what was ever logically recorded is itself impossible under normal operation (this
  * app never grows a destination file beyond what it itself appended) and is treated as a confirmed
  * inconsistency, not merely "unverified" -- refused without attempting a read.
+ *
+ * M8/D-1 (M7 followup "destSize=0 エッジ"): `destSize === 0` while `recordedSyncedBytes > 0` is *also*
+ * refused outright, rather than optimistically treated as a valid (if trivial, zero-length) range. From
+ * these two numbers alone this is indistinguishable from the destination having genuinely held a
+ * post-skip suffix that was then deleted out-of-band while mirroring was pointed elsewhere -- silently
+ * resuming an ordinary sync from `recordedSyncedBytes` here would (re)create the destination file missing
+ * its entire logical prefix, an append-only violation nothing downstream could ever detect from the file
+ * alone. The one case this must NOT misfire on -- `destSize === 0` *and* `recordedSyncedBytes === 0`, a
+ * brand-new output root just configured for a session with no destination content and nothing recorded
+ * yet -- falls through unaffected to the ordinary trivial-range return below (offset=0, length=0).
  */
 export function computeResumeVerificationRange({
   destSize,
@@ -125,6 +135,15 @@ export function computeResumeVerificationRange({
       reason:
         `宛先の実サイズ（${destSize} バイト）が記録済みの進捗（${recordedSyncedBytes} バイト）を超えて` +
         'います。宛先が外部で変更された可能性があるため、自動同期を中止しました'
+    }
+  }
+  if (destSize === 0 && recordedSyncedBytes > 0) {
+    return {
+      ok: false,
+      reason:
+        `宛先にミラー先ファイルが見つかりません（記録済みの進捗は ${recordedSyncedBytes} バイトです）。` +
+        '宛先が外部で削除された可能性があるため、自動同期を中止しました。バックフィルを実行して復旧して' +
+        'ください'
     }
   }
   return { ok: true, offset: recordedSyncedBytes - destSize, length: destSize }

@@ -22,8 +22,13 @@ function isEnoent(err: unknown): boolean {
 function sessionDir(destRoot: string, sessionId: string): string {
   const dir = resolveContainedPath(destRoot, sessionId)
   if (!dir) {
+    // M8 followup (i18n): Japanese lead sentence + original English preserved in parentheses, matching
+    // describeProbeErrno's convention below -- this is a defensive-in-depth path (sessionId already passed
+    // the isValidSessionId whitelist upstream) but can still reach `last_error` (via
+    // mirrorCoordinator.ts's recordError) and be shown verbatim in the otherwise all-Japanese UI.
     throw new Error(
-      `refusing to mirror: session id escapes the configured output root: ${sessionId}`
+      `セッションIDがミラー出力先の外を指しているため中止します（refusing to mirror: session id escapes ` +
+        `the configured output root: ${sessionId}）`
     )
   }
   return dir
@@ -55,9 +60,13 @@ export function createFsSink(destRoot: string): ArchiveSink {
       }
 
       if (currentSize !== offset) {
+        // M8 followup (i18n): Japanese lead sentence + original English preserved in parentheses (same
+        // convention as sessionDir's throw above and describeProbeErrno below) -- this append-only guard
+        // failure is exactly the kind of failure recordError surfaces verbatim as `last_error` in the UI.
         throw new Error(
-          `mirror destination transcript for session ${sessionId} is ${currentSize} bytes, expected ` +
-            `${offset} bytes at append time; refusing to write (append-only violation guard)`
+          `ミラー先のファイルサイズが想定と一致しないため書き込みを中止します（append-only 違反ガード）` +
+            `（mirror destination transcript for session ${sessionId} is ${currentSize} bytes, expected ` +
+            `${offset} bytes at append time; refusing to write (append-only violation guard)）`
         )
       }
 
@@ -89,9 +98,10 @@ export function createFsSink(destRoot: string): ArchiveSink {
         // actually read, which could produce a false match/mismatch instead of a clear I/O-level signal.
         const { bytesRead } = await handle.read(buffer, 0, length, 0)
         if (bytesRead !== length) {
+          // M8 followup (i18n): Japanese lead sentence + original English preserved in parentheses.
           throw new Error(
-            `short read at ${file}: expected ${length} byte(s), got ${bytesRead} ` +
-              '(the destination may have changed concurrently)'
+            `ミラー先の読み取りバイト数が不足しています（宛先が同時に変更された可能性があります）` +
+              `（short read at ${file}: expected ${length} byte(s), got ${bytesRead}）`
           )
         }
         return buffer

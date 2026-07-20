@@ -1,7 +1,7 @@
 ---
 milestone: M8
 title: M7 残課題の解消（ミラーの磨き込み）
-status: draft   # draft → approved（/cockpit-build 起動 = 承認イベント）→ shipped（品質ゲート合格）
+status: shipped   # draft → approved（/cockpit-build 起動 = 承認イベント）→ shipped（品質ゲート合格）
 created: 2026-07-21
 decisions: docs/adr/0008-archive-mirror.md, docs/adr/0009-per-root-mirror-progress.md
 ---

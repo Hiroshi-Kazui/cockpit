@@ -118,10 +118,10 @@ describe('computeResumeVerificationRange (ADR-0009 decision 3: per-root resume c
     })
   })
 
-  it('treats a destination with nothing physically written yet as a trivial (zero-length) range', () => {
-    expect(computeResumeVerificationRange({ destSize: 0, recordedSyncedBytes: 100 })).toEqual({
+  it('treats a destination with nothing physically written and nothing recorded yet as a trivial (zero-length) range (M8/D-1: newly-configured output root, not a suspected deletion)', () => {
+    expect(computeResumeVerificationRange({ destSize: 0, recordedSyncedBytes: 0 })).toEqual({
       ok: true,
-      offset: 100,
+      offset: 0,
       length: 0
     })
   })
@@ -131,6 +131,21 @@ describe('computeResumeVerificationRange (ADR-0009 decision 3: per-root resume c
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.reason).toMatch(/宛先/)
+    }
+  })
+
+  // M8/D-1 (M7 followup "destSize=0 エッジ"): destSize=0 with real recorded progress can no longer be
+  // told apart, from these two numbers alone, from the destination having been deleted out-of-band after
+  // genuinely holding a post-skip suffix -- resuming ordinary sync from offset=recordedSyncedBytes here
+  // would silently write a *new* file missing its entire logical prefix (an append-only violation the
+  // destination's own reader could never detect from the file alone). Treated as a confirmed inconsistency
+  // requiring an explicit backfill, the same "refuse outright, never guess" posture computeBackfillPlan's
+  // suffix-refuse and the >recordedSyncedBytes branch above already take.
+  it('flags destSize=0 with recordedSyncedBytes>0 as an error -- suspected external deletion of the destination, not optimistically adopted (M8/D-1)', () => {
+    const result = computeResumeVerificationRange({ destSize: 0, recordedSyncedBytes: 100 })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toMatch(/バックフィル|削除/)
     }
   })
 })

@@ -224,6 +224,16 @@ export function ArchiveOutputSettings({
                 : `バックフィル中: ${backfillProgress.processedSessions}/${backfillProgress.totalSessions} 件`}
             </div>
           )}
+          {/* M8 followup (UX: バックフィル長時間予告が初回進捗到着で消える) -- the pre-progress notice above
+              (backfillStarting && !backfillProgress) only covers the brief window before the first progress
+              event lands; once real progress starts streaming in, that notice disappears even though a
+              large session count can still take a while to finish. A quieter, persistent reminder here keeps
+              that expectation visible for the whole in-progress window, not just its very start. */}
+          {backfillProgress && !backfillProgress.done && (
+            <p className="archive-output-settings__hint archive-output-settings__hint--small">
+              セッション数によっては完了まで時間がかかる場合があります。
+            </p>
+          )}
           <div className="archive-output-settings__status">
             <h4>ミラー同期状態</h4>
             {!outputRoot && (

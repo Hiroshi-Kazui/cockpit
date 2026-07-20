@@ -75,8 +75,14 @@ export function App(): React.JSX.Element {
   }, [])
   const closeArchiveOutputSettings = useCallback((): void => {
     setShowArchiveOutputSettings(false)
-    if (archiveOutputSettingsOpener === 'statusBar') {
-      mirrorIndicatorButtonRef.current?.focus()
+    // M8 followup (UX): StatusBar's mirror indicator only mounts while an output root is configured
+    // (MirrorIndicator's own `outputRoot === null` guard) -- clearing the output root ("解除") from
+    // *inside* this dialog, then closing it, unmounts that button before this callback runs, leaving
+    // `mirrorIndicatorButtonRef.current` null. Falling through to the always-mounted header button instead
+    // of calling `.focus()` on nothing keeps focus inside the app shell rather than silently dropping to
+    // <body> (breaking the next Tab/Escape a keyboard user expects to still work predictably).
+    if (archiveOutputSettingsOpener === 'statusBar' && mirrorIndicatorButtonRef.current) {
+      mirrorIndicatorButtonRef.current.focus()
     } else {
       archiveOutputSettingsButtonRef.current?.focus()
     }

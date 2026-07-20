@@ -61,6 +61,15 @@ const DEFAULT_DEBOUNCE_MS = 1000
 const DEFAULT_BASE_RETRY_MS = 2000
 const DEFAULT_MAX_RETRY_MS = 60_000
 
+/** M8 followup (structure: retryTimers/retryDelays が sessionId 単独キー): the two independent retry loops
+ * a single session can have in flight at once -- `rebaselineSession`'s content-prefix *verification* retry
+ * (a transient I/O failure while re-checking a resumed root, ADR-0009 decision 3/4) and `runOnce`'s ordinary
+ * *sync* retry (a transient destination write failure). Before this milestone both shared one `sessionId`-
+ * keyed map, so whichever operation happened to settle (succeed or reschedule) last would clobber the
+ * other's backoff state/timer -- a verify retry silently cancelled by an unrelated sync success, or vice
+ * versa. `retryKey` below keys each map by `(sessionId, operation)` instead, so the two never interfere. */
+type RetryOperationKind = 'verify' | 'sync'
+
 export class MirrorCoordinator implements MirrorControlPort {
   private readonly repo: ArchiveMirrorRepoPort
   private readonly spool: SpoolReader
@@ -74,6 +83,8 @@ export class MirrorCoordinator implements MirrorControlPort {
   private currentRoot: string | null = null
   private sink: ArchiveSink | null = null
   private readonly debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  // Keyed by `retryKey(sessionId, operation)`, not `sessionId` alone -- see RetryOperationKind's doc
+  // comment above for why.
   private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly retryDelays = new Map<string, number>()
   private readonly inFlight = new Set<string>()
@@ -124,16 +135,25 @@ export class MirrorCoordinator implements MirrorControlPort {
     this.debounceTimers.set(sessionId, timer)
   }
 
-  private clearSessionTimers(sessionId: string): void {
-    const debounce = this.debounceTimers.get(sessionId)
-    if (debounce) {
-      clearTimeout(debounce)
-      this.debounceTimers.delete(sessionId)
-    }
-    const retry = this.retryTimers.get(sessionId)
-    if (retry) {
-      clearTimeout(retry)
-      this.retryTimers.delete(sessionId)
+  /** Computes the composite key `retryTimers`/`retryDelays` are actually keyed by (sessionId + operation)
+   * -- see `RetryOperationKind`'s doc comment above for why a plain sessionId is no longer enough. Joined
+   * with a single space, a character never legal inside either a session id (isValidSessionId's whitelist)
+   * or a RetryOperationKind literal, ruling out any accidental collision between the two parts. */
+  private retryKey(sessionId: string, operation: RetryOperationKind): string {
+    return `${sessionId} ${operation}`
+  }
+
+  /** Cancels and forgets `operation`'s retry backoff state for `sessionId`, if any is pending -- called
+   * once that operation actually succeeds (runOnce/rebaselineSession), so a stale backoff delay never
+   * lingers past the failure it was tracking. Never touches the *other* operation's retry state (the whole
+   * point of the composite key). */
+  private clearRetryState(sessionId: string, operation: RetryOperationKind): void {
+    const key = this.retryKey(sessionId, operation)
+    this.retryDelays.delete(key)
+    const timer = this.retryTimers.get(key)
+    if (timer) {
+      clearTimeout(timer)
+      this.retryTimers.delete(key)
     }
   }
 
@@ -150,9 +170,14 @@ export class MirrorCoordinator implements MirrorControlPort {
    */
   setOutputRoot(newRoot: string | null): void {
     const prevRoot = this.currentRoot
-    for (const sessionId of [...this.debounceTimers.keys(), ...this.retryTimers.keys()]) {
-      this.clearSessionTimers(sessionId)
-    }
+    // Every pending timer -- both the per-session debounce timers and the per-(session, operation) retry
+    // timers -- is unconditionally cancelled on every root switch, regardless of which operation scheduled
+    // it. Iterated by value (not by decoding sessionId back out of retryTimers' composite keys), so this
+    // stays correct however that key is shaped.
+    for (const timer of this.debounceTimers.values()) clearTimeout(timer)
+    this.debounceTimers.clear()
+    for (const timer of this.retryTimers.values()) clearTimeout(timer)
+    this.retryTimers.clear()
     this.retryDelays.clear()
     this.currentRoot = newRoot
     this.sink = newRoot ? this.createSinkFn(newRoot) : null
@@ -207,6 +232,11 @@ export class MirrorCoordinator implements MirrorControlPort {
     // evaluating the wrong destination's content against this session's row.
     const sink = this.sink
     if (!sink) return // setOutputRoot(null) raced this call -- nothing to do
+    // M8 followup (structure: sink 冒頭捕捉と root 引数の非対称): `sink` needs the fresh-capture-before-
+    // await discipline above because `this.sink` is *mutable* shared state a concurrent setOutputRoot call
+    // could reassign mid-await. `root`, by contrast, is simply this call's own parameter -- every call site
+    // (setOutputRoot's loop, and this method's own retry closure below) fixes it once, per (session, root),
+    // at call time, so there is no equivalent "current value could change under us" hazard to guard against.
 
     const existing = this.repo.get(sessionId, root)
     if (existing?.state === 'error' && isUnrecoverableSyncedBytes(existing.syncedBytes)) {
@@ -230,6 +260,7 @@ export class MirrorCoordinator implements MirrorControlPort {
           updatedAt: this.now()
         })
         this.onStatusChanged()
+        this.clearRetryState(sessionId, 'verify')
         return
       }
 
@@ -262,6 +293,7 @@ export class MirrorCoordinator implements MirrorControlPort {
             })
             this.onStatusChanged()
           }
+          this.clearRetryState(sessionId, 'verify')
           return
         }
       }
@@ -299,7 +331,7 @@ export class MirrorCoordinator implements MirrorControlPort {
         updatedAt: this.now()
       })
       this.onStatusChanged()
-      this.scheduleRetry(sessionId, () => this.rebaselineSession(sessionId, root))
+      this.scheduleRetry(sessionId, 'verify', () => this.rebaselineSession(sessionId, root))
     }
   }
 
@@ -375,7 +407,14 @@ export class MirrorCoordinator implements MirrorControlPort {
             const row = this.repo.get(sessionId, root)
             if (row?.state === 'error') failed++
           }
-        } catch {
+        } catch (err) {
+          // M8 followup (silent failure): previously only counted towards `failedSessions` without
+          // recording *why* -- unlike the `plan.action === 'refuse'` branch just above (and the ordinary
+          // sync/verify failure paths elsewhere in this file), which both call recordError so the reason
+          // ends up in archive_mirror.last_error, visible in the UI (D-5). This branch catches
+          // sink.statTranscript/repo.get/upsert throwing (a transient I/O or DB error mid-loop) -- now
+          // recorded the same way so a failed backfill entry is always diagnosable, never a silent count.
+          this.recordError(sessionId, root, err)
           failed++
         }
         processed++
@@ -418,15 +457,10 @@ export class MirrorCoordinator implements MirrorControlPort {
       }
       await this.syncTranscript(sessionId, root, sink)
       await this.syncMetadata(sessionId, root, sink)
-      this.retryDelays.delete(sessionId)
-      const retryTimer = this.retryTimers.get(sessionId)
-      if (retryTimer) {
-        clearTimeout(retryTimer)
-        this.retryTimers.delete(sessionId)
-      }
+      this.clearRetryState(sessionId, 'sync')
     } catch (err) {
       this.recordError(sessionId, root, err)
-      this.scheduleRetry(sessionId)
+      this.scheduleRetry(sessionId, 'sync')
     } finally {
       this.inFlight.delete(sessionId)
       if (this.pendingRerun.delete(sessionId)) {
@@ -435,23 +469,27 @@ export class MirrorCoordinator implements MirrorControlPort {
     }
   }
 
-  /** Schedules `operation` (defaulting to an ordinary `runOnce` retry) after an exponential backoff.
-   * Generalized (rather than hardcoded to `runOnce`) so rebaselineSession's own transient-I/O-failure path
-   * can reuse the same backoff bookkeeping to retry *verification* instead of an ordinary sync pass. */
+  /** Schedules `operation` (defaulting to an ordinary `runOnce` sync retry) after an exponential backoff,
+   * tracked under `kind`'s own composite key (`retryKey`) -- generalized (rather than hardcoded to
+   * `runOnce`/`'sync'`) so rebaselineSession's own transient-I/O-failure path can reuse the same backoff
+   * bookkeeping to retry *verification* instead, without the two ever sharing (and clobbering) each other's
+   * timer/delay state (M8 followup, see RetryOperationKind's doc comment above). */
   private scheduleRetry(
     sessionId: string,
+    kind: RetryOperationKind,
     operation: () => Promise<void> = () => this.runOnce(sessionId)
   ): void {
-    const prevDelay = this.retryDelays.get(sessionId) ?? this.baseRetryDelayMs / 2
+    const key = this.retryKey(sessionId, kind)
+    const prevDelay = this.retryDelays.get(key) ?? this.baseRetryDelayMs / 2
     const nextDelay = Math.min(prevDelay * 2, this.maxRetryDelayMs)
-    this.retryDelays.set(sessionId, nextDelay)
-    const existing = this.retryTimers.get(sessionId)
+    this.retryDelays.set(key, nextDelay)
+    const existing = this.retryTimers.get(key)
     if (existing) clearTimeout(existing)
     const timer = setTimeout(() => {
-      this.retryTimers.delete(sessionId)
+      this.retryTimers.delete(key)
       void operation()
     }, nextDelay)
-    this.retryTimers.set(sessionId, timer)
+    this.retryTimers.set(key, timer)
   }
 
   /**

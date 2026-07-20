@@ -292,4 +292,48 @@ test.describe('archive output settings dialog: opener-based focus restore (M7 fo
       fs.rmSync(mirrorRoot, { recursive: true, force: true })
     }
   })
+
+  // M8 followup: opening via the StatusBar indicator, then clearing ("解除") the output root *from inside*
+  // the dialog before closing it, unmounts MirrorIndicator (StatusBar.tsx only renders it while an output
+  // root is configured) -- so the ref App.tsx normally focuses back is null by the time the dialog closes.
+  // Focus must fall back to the (always-mounted) header button, never silently drop to <body>.
+  test('closing after clearing the output root from the StatusBar-opened dialog falls back to the header button, not <body>', async () => {
+    let launched: LaunchedApp | undefined
+    const mirrorRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-e2e-focus-clear-mirror-'))
+
+    try {
+      launched = await launchApp()
+      const { app, window: page } = launched
+
+      const headerButton = page.locator('.app-header__archive-button:has-text("アーカイブ出力先")')
+      await headerButton.click()
+      await expect(page.locator('.archive-output-settings')).toBeVisible()
+      await app.evaluate(({ dialog }, dir) => {
+        dialog.showOpenDialog = () =>
+          Promise.resolve({ canceled: false, filePaths: [dir] } as Electron.OpenDialogReturnValue)
+      }, mirrorRoot)
+      await page.click('button:has-text("フォルダを選択…")')
+      await expect(page.locator('.archive-output-settings__current-value')).toHaveText(mirrorRoot)
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.archive-output-settings')).toHaveCount(0)
+
+      const mirrorIndicator = page.locator('.status-bar__mirror')
+      await expect(mirrorIndicator).toBeVisible({ timeout: 20_000 })
+      await mirrorIndicator.click()
+      await expect(page.locator('.archive-output-settings')).toBeVisible()
+
+      await page.click('button:has-text("解除")')
+      await expect(page.locator('.archive-output-settings__current-value')).toHaveText('未設定')
+      // MirrorIndicator has now unmounted from the StatusBar -- the ref App.tsx would otherwise focus is
+      // null at this point.
+      await expect(mirrorIndicator).toHaveCount(0)
+
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.archive-output-settings')).toHaveCount(0)
+      await expect(headerButton).toBeFocused()
+    } finally {
+      if (launched) await closeApp(launched)
+      fs.rmSync(mirrorRoot, { recursive: true, force: true })
+    }
+  })
 })

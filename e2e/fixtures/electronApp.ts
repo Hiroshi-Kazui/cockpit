@@ -12,11 +12,22 @@
 // double-clicking the packaged app would -- verified via `app.getAppPath()` returning the repo root, and
 // `resources/statusline-forwarder.js` existing under it, in exactly this configuration.
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+// `electron`'s package default export resolves to the *path string* of the electron binary when required
+// from a plain (non-Electron) Node process -- exactly what this file is (Playwright test files run under
+// plain Node, never inside Electron itself) -- and only resolves to the in-process Electron API object
+// when `require('electron')`/`import 'electron'` executes *inside* an already-running Electron process
+// (e.g. src/main/index.ts). This is a well-known Electron packaging quirk; TypeScript's bundled ambient
+// types for this package model only the in-Electron API shape, so the string case needs an explicit cast
+// below (M8 followup: migration-archive-mirror.spec.ts's ELECTRON_RUN_AS_NODE seeding/readback helpers).
+import electronModule from 'electron'
 
 export const REPO_ROOT = path.resolve(__dirname, '..', '..')
+
+const electronBinaryPath = electronModule as unknown as string
 
 export interface LaunchedApp {
   app: ElectronApplication
@@ -24,17 +35,36 @@ export interface LaunchedApp {
   userDataDir: string
 }
 
-/** Launches the built app (`npm run build` must have run first -- see package.json's `test:e2e` script)
- * with a fresh, isolated --user-data-dir. */
-export async function launchApp(): Promise<LaunchedApp> {
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-e2e-userdata-'))
+/** Launches the built app (`npm run build` must have run first -- see package.json's `test:e2e` script).
+ * Uses a fresh, isolated --user-data-dir by default; a caller that needs the app to start against a
+ * *pre-seeded* userData directory (e.g. migration-archive-mirror.spec.ts, which must write a legacy-shape
+ * cockpit.db there before the app's own startup migration ever touches it) may pass one explicitly instead
+ * -- it is used as-is (never removed/recreated), so the caller owns seeding it beforehand and cleaning it
+ * up afterwards. */
+export async function launchApp(userDataDir?: string): Promise<LaunchedApp> {
+  const dir = userDataDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-e2e-userdata-'))
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${userDataDir}`],
+    args: ['.', `--user-data-dir=${dir}`],
     cwd: REPO_ROOT
   })
   const window = await app.firstWindow()
   await window.waitForSelector('.app-header h1')
-  return { app, window, userDataDir }
+  return { app, window, userDataDir: dir }
+}
+
+/** Runs `scriptPath` (a standalone CJS script, e.g. e2e/fixtures/seed-legacy-archive-mirror.js) through the
+ * project's own Electron binary in `ELECTRON_RUN_AS_NODE=1` mode -- the same technique
+ * e2e/probes/td1-statusline-probe.js documents for node-pty, needed here because better-sqlite3's native
+ * binary in this repo is rebuilt for *Electron's* Node ABI, not plain Node's (running these fixture scripts
+ * via plain `node` would fail to load it, or worse, silently load a different, incompatible build).
+ * Returns the script's stdout (trimmed); throws (surfacing stderr) if it exits non-zero -- callers must not
+ * swallow a seeding/readback failure, the entire migration assertion depends on it having actually run. */
+export function runElectronAsNode(scriptPath: string, args: string[] = []): string {
+  return execFileSync(electronBinaryPath, [scriptPath, ...args], {
+    cwd: REPO_ROOT,
+    encoding: 'utf-8',
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+  }).trim()
 }
 
 /** Closes the app and removes its isolated userData dir. */
