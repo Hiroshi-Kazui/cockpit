@@ -8,7 +8,13 @@
 // remainingPercentageColor) rather than double-encoding the measured/estimated distinction, which is
 // already carried by the "推定" badge below.
 import { useState } from 'react'
-import type { PlanPreset, RateLimitWindowDisplay, UsageDisplay, UsageSettings } from '@shared/ipc'
+import type {
+  MirrorStatusSummary,
+  PlanPreset,
+  RateLimitWindowDisplay,
+  UsageDisplay,
+  UsageSettings
+} from '@shared/ipc'
 import { isEstimatedDisplay, remainingPercentageColor } from '@shared/usage'
 
 const PRESET_LABELS: Record<PlanPreset, string> = {
@@ -54,13 +60,56 @@ interface StatusBarProps {
   settings: UsageSettings | null
   settingsError: string | null
   onSettingsChange: (next: UsageSettings) => void
+  /** M6 (spec §4.4.1): archive-output mirror status, or null while not yet loaded. `outputRoot: null`
+   * means mirroring is unconfigured -- the indicator below renders nothing in that case (there is nothing
+   * to report). */
+  mirrorStatus: MirrorStatusSummary | null
+  onOpenArchiveOutputSettings: () => void
+}
+
+// M6 usability note (plan.md Phase 3): mirror errors are surfaced here, non-modally, specifically so they
+// never block or interrupt the claude dialogue in any pane -- clicking through opens the detail dialog,
+// but the indicator itself never demands attention the way a modal would.
+function MirrorIndicator({
+  mirrorStatus,
+  onOpen
+}: {
+  mirrorStatus: MirrorStatusSummary | null
+  onOpen: () => void
+}): React.JSX.Element | null {
+  if (!mirrorStatus || mirrorStatus.outputRoot === null) return null
+  const errorCount = mirrorStatus.entries.filter((e) => e.state === 'error').length
+  const pendingCount = mirrorStatus.entries.filter((e) => e.state === 'pending').length
+  const variant = errorCount > 0 ? 'error' : pendingCount > 0 ? 'pending' : 'synced'
+  const label =
+    errorCount > 0
+      ? `ミラー: エラー ${errorCount}件`
+      : pendingCount > 0
+        ? `ミラー: 保留 ${pendingCount}件`
+        : 'ミラー: 同期済み'
+  return (
+    <button
+      type="button"
+      className={`status-bar__mirror status-bar__mirror--${variant}`}
+      onClick={onOpen}
+      title={
+        errorCount > 0
+          ? 'アーカイブのミラー同期でエラーが発生しています（claude との対話は継続できます）'
+          : 'アーカイブ出力先の同期状態'
+      }
+    >
+      {label}
+    </button>
+  )
 }
 
 export function StatusBar({
   display,
   settings,
   settingsError,
-  onSettingsChange
+  onSettingsChange,
+  mirrorStatus,
+  onOpenArchiveOutputSettings
 }: StatusBarProps): React.JSX.Element {
   const estimated = display ? isEstimatedDisplay(display) : false
   // M3 FIX iteration 2 (minor #7): a custom-limit input that fails validation was previously silently
@@ -161,6 +210,7 @@ export function StatusBar({
           設定の保存に失敗しました: {settingsError}
         </span>
       )}
+      <MirrorIndicator mirrorStatus={mirrorStatus} onOpen={onOpenArchiveOutputSettings} />
     </div>
   )
 }

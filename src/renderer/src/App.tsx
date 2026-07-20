@@ -9,10 +9,12 @@ import {
   type PurposeSummary
 } from '@shared/ipc'
 import { visiblePanesForLayout, type LayoutMode } from '@shared/layout'
+import { ArchiveOutputSettings } from './components/ArchiveOutputSettings'
 import { LayoutSwitcher } from './components/LayoutSwitcher'
 import { PaneGrid } from './components/PaneGrid'
 import { SessionBrowser } from './components/SessionBrowser'
 import { StatusBar } from './components/StatusBar'
+import { useMirrorStatus } from './hooks/useMirrorStatus'
 import { usePaneFocusShortcuts } from './hooks/usePaneFocusShortcuts'
 import { useRateLimitsDisplay } from './hooks/useRateLimitsDisplay'
 import { useUsageSettings } from './hooks/useUsageSettings'
@@ -52,8 +54,17 @@ export function App(): React.JSX.Element {
     setShowSessionBrowser(false)
     archiveButtonRef.current?.focus()
   }, [])
+  // M6 (spec §4.4.1): same overlay-sibling-of-PaneGrid / focus-restore-to-opener convention as
+  // showSessionBrowser above.
+  const [showArchiveOutputSettings, setShowArchiveOutputSettings] = useState(false)
+  const archiveOutputSettingsButtonRef = useRef<HTMLButtonElement | null>(null)
+  const closeArchiveOutputSettings = useCallback((): void => {
+    setShowArchiveOutputSettings(false)
+    archiveOutputSettingsButtonRef.current?.focus()
+  }, [])
   const rateLimitsDisplay = useRateLimitsDisplay()
   const usageSettings = useUsageSettings()
+  const mirrorStatus = useMirrorStatus()
 
   // M5 (AC "キーボードでのペイン間フォーカス移動"): registry of each mounted pane's terminal-focus
   // callback, populated by Pane.tsx via onRegisterFocus and consumed by usePaneFocusShortcuts' Ctrl+1..4
@@ -111,10 +122,14 @@ export function App(): React.JSX.Element {
   // window keydown listener on every unrelated App re-render -- only when `layout` actually changes.
   const visiblePanes = useMemo(() => new Set(visiblePanesForLayout(layout)), [layout])
 
-  // M5: disabled while the read-only session browser overlay is open (see usePaneFocusShortcuts' `enabled`
-  // doc comment) so its `aria-modal="true"` dialog can't be bypassed by a global Ctrl+1..4 focus jump to a
-  // pane's xterm behind it.
-  usePaneFocusShortcuts(visiblePanes, getPaneFocus, !showSessionBrowser)
+  // M5/M6: disabled while any `aria-modal="true"` overlay is open (read-only session browser, or the M6
+  // archive-output settings dialog) -- see usePaneFocusShortcuts' `enabled` doc comment -- so a global
+  // Ctrl+1..4 focus jump can't bypass the modal and land keystrokes on a live pty behind it.
+  usePaneFocusShortcuts(
+    visiblePanes,
+    getPaneFocus,
+    !showSessionBrowser && !showArchiveOutputSettings
+  )
 
   return (
     <div className="app">
@@ -128,6 +143,14 @@ export function App(): React.JSX.Element {
           onClick={() => setShowSessionBrowser(true)}
         >
           過去セッション
+        </button>
+        <button
+          type="button"
+          ref={archiveOutputSettingsButtonRef}
+          className="app-header__archive-button"
+          onClick={() => setShowArchiveOutputSettings(true)}
+        >
+          アーカイブ出力先
         </button>
       </header>
       {loadError && (
@@ -154,9 +177,13 @@ export function App(): React.JSX.Element {
         settings={usageSettings.settings}
         settingsError={usageSettings.error}
         onSettingsChange={(next) => void usageSettings.update(next)}
+        mirrorStatus={mirrorStatus}
+        onOpenArchiveOutputSettings={() => setShowArchiveOutputSettings(true)}
       />
       {/* M5: sibling of PaneGrid, not nested inside it -- see showSessionBrowser's doc comment above. */}
       {showSessionBrowser && <SessionBrowser onClose={closeSessionBrowser} />}
+      {/* M6: same sibling-of-PaneGrid convention -- see showArchiveOutputSettings's doc comment above. */}
+      {showArchiveOutputSettings && <ArchiveOutputSettings onClose={closeArchiveOutputSettings} />}
     </div>
   )
 }

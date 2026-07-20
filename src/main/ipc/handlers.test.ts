@@ -9,6 +9,9 @@
 // values), so this test never touches node-pty/better-sqlite3 -- fake objects cast to those types are
 // enough, since handlers.ts only ever calls methods on them.
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import type { Database } from 'better-sqlite3'
 import type { BrowserWindow } from 'electron'
 import { registerIpcHandlers, unregisterIpcHandlers } from './handlers'
@@ -25,6 +28,7 @@ import type { PtyManager } from '../pty/ptyManager'
 import type { PurposeCoordinator } from '../pty/purposeCoordinator'
 import type { UsageCoordinator } from '../telemetry/usageCoordinator'
 import type { ArchiveBrowserPort } from '../archive/archiveBrowser'
+import type { MirrorControlPort } from '../archive/mirror/mirrorCoordinator'
 
 type Handler = (event: unknown, req: unknown) => unknown
 
@@ -77,20 +81,51 @@ function makeFakeArchiveBrowser(): ArchiveBrowserPort & {
   }
 }
 
+function makeFakeMirrorControl(): MirrorControlPort & {
+  setOutputRoot: ReturnType<typeof vi.fn>
+  getStatusSummary: ReturnType<typeof vi.fn>
+  startBackfill: ReturnType<typeof vi.fn>
+} {
+  return {
+    getOutputRoot: () => null,
+    setOutputRoot: vi.fn(),
+    getStatusSummary: vi.fn(() => ({ outputRoot: null, entries: [] })),
+    startBackfill: vi.fn(async () => {})
+  } as unknown as MirrorControlPort & {
+    setOutputRoot: ReturnType<typeof vi.fn>
+    getStatusSummary: ReturnType<typeof vi.fn>
+    startBackfill: ReturnType<typeof vi.fn>
+  }
+}
+
 function setup(isRunning: (pane: number) => boolean): {
   ptyManager: PtyManager
   purposeCoordinator: ReturnType<typeof makeFakePurposeCoordinator>
   archiveBrowser: ReturnType<typeof makeFakeArchiveBrowser>
+  mirrorControl: ReturnType<typeof makeFakeMirrorControl>
 } {
   registeredHandlers.clear()
   const ptyManager = makeFakePtyManager(isRunning)
   const purposeCoordinator = makeFakePurposeCoordinator()
   const archiveBrowser = makeFakeArchiveBrowser()
+  const mirrorControl = makeFakeMirrorControl()
   const usageCoordinator = { refreshDisplay: vi.fn() } as unknown as UsageCoordinator
-  const db = {} as unknown as Database
+  // M6: setArchiveOutputRoot (called by the archiveOutputRootSet handler) does a raw db.prepare(...).run(...)
+  // -- stub just enough of better-sqlite3's shape for that call to no-op rather than throw, matching this
+  // test file's existing convention of never touching a real SQLite engine (see this file's header comment).
+  const db = { prepare: vi.fn(() => ({ run: vi.fn() })) } as unknown as Database
   const window = {} as unknown as BrowserWindow
-  registerIpcHandlers(window, db, ptyManager, usageCoordinator, purposeCoordinator, archiveBrowser)
-  return { ptyManager, purposeCoordinator, archiveBrowser }
+  registerIpcHandlers(
+    window,
+    db,
+    ptyManager,
+    usageCoordinator,
+    purposeCoordinator,
+    archiveBrowser,
+    'C:\\fake\\userData\\archive',
+    mirrorControl
+  )
+  return { ptyManager, purposeCoordinator, archiveBrowser, mirrorControl }
 }
 
 describe('paneLaunchStart/paneLaunchResume isRunning guard (M4 FIX iter3 #5)', () => {
@@ -228,5 +263,83 @@ describe('archiveListSessions / archiveReadSession', () => {
     const handler = registeredHandlers.get(IpcChannels.archiveReadSession)
 
     await expect(handler?.(undefined, { sessionId: '' })).rejects.toThrow(/Invalid sessionId/)
+  })
+})
+
+// M6 (spec §4.4.1, ADR-0008): archive output-destination mirroring IPC surface.
+describe('archiveOutputRootSet / archiveMirrorStatusGet / archiveBackfillStart', () => {
+  beforeEach(() => {
+    unregisterIpcHandlers()
+    registeredHandlers.clear()
+  })
+
+  it('clearing (root: null) always succeeds and never probes the filesystem', async () => {
+    const { mirrorControl } = setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.archiveOutputRootSet)
+
+    const result = await handler?.(undefined, { root: null })
+
+    expect(result).toEqual({ ok: true })
+    expect(mirrorControl.setOutputRoot).toHaveBeenCalledWith(null)
+  })
+
+  it('rejects a candidate root that is the spool itself or a subdirectory of it (self-mirror prevention)', async () => {
+    const { mirrorControl } = setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.archiveOutputRootSet)
+
+    const result = await handler?.(undefined, { root: 'C:\\fake\\userData\\archive\\some-session' })
+
+    expect(result).toEqual({ ok: false, reason: expect.stringContaining('スプール') })
+    expect(mirrorControl.setOutputRoot).not.toHaveBeenCalled()
+  })
+
+  it('accepts a valid writable candidate root, persists it, and activates the mirror coordinator', async () => {
+    const { mirrorControl } = setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.archiveOutputRootSet)
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-handlers-test-'))
+
+    try {
+      const result = await handler?.(undefined, { root: tmpRoot })
+      expect(result).toEqual({ ok: true })
+      expect(mirrorControl.setOutputRoot).toHaveBeenCalledWith(tmpRoot)
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('reports a probe failure as a typed result rather than throwing (silent failure prohibited)', async () => {
+    const { mirrorControl } = setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.archiveOutputRootSet)
+    const tmpParent = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-handlers-test-'))
+    const blockedByFile = path.join(tmpParent, 'blocked')
+    fs.writeFileSync(blockedByFile, 'not a directory')
+
+    try {
+      const result = await handler?.(undefined, { root: blockedByFile })
+      expect(result).toEqual({ ok: false, reason: expect.any(String) })
+      expect(mirrorControl.setOutputRoot).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(tmpParent, { recursive: true, force: true })
+    }
+  })
+
+  it('archiveMirrorStatusGet delegates straight through to mirrorControl.getStatusSummary', () => {
+    const { mirrorControl } = setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.archiveMirrorStatusGet)
+
+    const result = handler?.(undefined, undefined)
+
+    expect(mirrorControl.getStatusSummary).toHaveBeenCalled()
+    expect(result).toEqual({ outputRoot: null, entries: [] })
+  })
+
+  it('archiveBackfillStart delegates to mirrorControl.startBackfill with a progress callback', async () => {
+    const { mirrorControl } = setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.archiveBackfillStart)
+
+    await handler?.(undefined, undefined)
+
+    expect(mirrorControl.startBackfill).toHaveBeenCalledTimes(1)
+    expect(mirrorControl.startBackfill).toHaveBeenCalledWith(expect.any(Function))
   })
 })

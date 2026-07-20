@@ -1,4 +1,8 @@
-# cockpit マイルストーン受け入れ基準
+# cockpit マイルストーン受け入れ基準（M1〜M5、凍結）
+
+> **本書は初期建設 M1〜M5 の記録として凍結**。M1〜M5 は出荷済みであり、これらの基準の回帰の正は
+> テストスイート（vitest / Playwright）である。**M6 以降の受け入れ基準は
+> `milestones/<Mn>-<slug>/acceptance.md`** に置く（起案は `/cockpit-plan`）。
 
 requirements-reviewer の逐条トレース基準であり、implementer の実装スコープ定義。
 各項目は「どのファイル/関数が満たすか」を特定できなければ未達扱い。

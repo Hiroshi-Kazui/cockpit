@@ -795,3 +795,193 @@ body {
   font-size: 11px;
   border-bottom: 1px solid var(--border);
 }
+
+/* ---- M6: archive-output mirror settings (spec §4.4.1, ADR-0008) ---- */
+.status-bar__mirror {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--fg);
+}
+
+.status-bar__mirror--synced {
+  color: #4ec9b0;
+  border-color: #4ec9b0;
+}
+
+.status-bar__mirror--pending {
+  color: #dcdcaa;
+  border-color: #dcdcaa;
+}
+
+.status-bar__mirror--error {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.archive-output-settings-backdrop {
+  position: fixed;
+  z-index: 20;
+}
+
+.archive-output-settings {
+  width: min(640px, calc(100% - 48px));
+  max-height: min(720px, calc(100% - 48px));
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.archive-output-settings__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #2d2d30;
+}
+
+.archive-output-settings__header h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.archive-output-settings__header button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 2px 8px;
+}
+
+.archive-output-settings__body {
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.archive-output-settings__hint {
+  font-size: 11.5px;
+  color: #9d9d9d;
+  margin: 0;
+}
+
+.archive-output-settings__current {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  align-items: baseline;
+}
+
+.archive-output-settings__current-label {
+  color: #b8b8b8;
+}
+
+.archive-output-settings__current-value {
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.archive-output-settings__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.archive-output-settings__actions button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.archive-output-settings__actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.archive-output-settings__error {
+  color: var(--error);
+  font-size: 12px;
+}
+
+.archive-output-settings__progress {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.archive-output-settings__status h4 {
+  margin: 4px 0;
+  font-size: 12px;
+  color: #b8b8b8;
+}
+
+.archive-output-settings__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.archive-output-settings__list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.archive-output-settings__badge {
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.archive-output-settings__badge--synced {
+  color: #1e1e1e;
+  background: #4ec9b0;
+}
+
+.archive-output-settings__badge--pending {
+  color: #1e1e1e;
+  background: #dcdcaa;
+}
+
+.archive-output-settings__badge--error {
+  color: #1e1e1e;
+  background: var(--error);
+}
+
+.archive-output-settings__session-id {
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.archive-output-settings__list-error {
+  color: var(--error);
+  flex-basis: 100%;
+}

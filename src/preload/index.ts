@@ -30,7 +30,11 @@ import {
   type ArchiveListSessionsRequest,
   type ArchiveSessionListItem,
   type ArchiveReadSessionRequest,
-  type ArchiveReadSessionResult
+  type ArchiveReadSessionResult,
+  type SetArchiveOutputRootRequest,
+  type SetArchiveOutputRootResult,
+  type MirrorStatusSummary,
+  type BackfillProgressEvent
 } from '../shared/ipc'
 
 export interface CockpitApi {
@@ -76,10 +80,19 @@ export interface CockpitApi {
     setSettings: (req: SetUsageSettingsRequest) => Promise<void>
   }
   /** M5 (spec §4.4): read-only past-session browsing. No write/delete method exists here -- the archive
-   * is append-only and this app never exposes an edit/delete UI for it (AC). */
+   * is append-only and this app never exposes an edit/delete UI for it (AC).
+   *
+   * M6 (spec §4.4.1, ADR-0008) adds output-destination mirroring controls below -- still no edit/delete
+   * of archived *content* itself, only where the (already read-only) archive is additionally mirrored to. */
   archive: {
     listSessions: (req: ArchiveListSessionsRequest) => Promise<ArchiveSessionListItem[]>
     readSession: (req: ArchiveReadSessionRequest) => Promise<ArchiveReadSessionResult>
+    chooseOutputRootFolder: () => Promise<ChooseFolderResult>
+    setOutputRoot: (req: SetArchiveOutputRootRequest) => Promise<SetArchiveOutputRootResult>
+    getMirrorStatus: () => Promise<MirrorStatusSummary>
+    onMirrorStatusUpdated: (listener: (summary: MirrorStatusSummary) => void) => () => void
+    startBackfill: () => Promise<void>
+    onBackfillProgress: (listener: (event: BackfillProgressEvent) => void) => () => void
   }
 }
 
@@ -135,7 +148,15 @@ const api: CockpitApi = {
   },
   archive: {
     listSessions: (req) => ipcRenderer.invoke(IpcChannels.archiveListSessions, req),
-    readSession: (req) => ipcRenderer.invoke(IpcChannels.archiveReadSession, req)
+    readSession: (req) => ipcRenderer.invoke(IpcChannels.archiveReadSession, req),
+    chooseOutputRootFolder: () => ipcRenderer.invoke(IpcChannels.archiveOutputRootChooseFolder),
+    setOutputRoot: (req) => ipcRenderer.invoke(IpcChannels.archiveOutputRootSet, req),
+    getMirrorStatus: () => ipcRenderer.invoke(IpcChannels.archiveMirrorStatusGet),
+    onMirrorStatusUpdated: (listener) =>
+      subscribe<MirrorStatusSummary>(IpcChannels.archiveMirrorStatusUpdated, listener),
+    startBackfill: () => ipcRenderer.invoke(IpcChannels.archiveBackfillStart),
+    onBackfillProgress: (listener) =>
+      subscribe<BackfillProgressEvent>(IpcChannels.archiveBackfillProgress, listener)
   }
 }
 

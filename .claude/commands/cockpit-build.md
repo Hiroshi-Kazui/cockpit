@@ -1,6 +1,6 @@
 ---
-description: cockpit をマイルストーン単位で「Sonnet実装→Opus4レビュー→fix」ループで品質ゲート合格まで自動構築する
-argument-hint: <M1|M2|M3|M4|M5>
+description: cockpit をマイルストーン単位で「Sonnet実装→Opus4レビュー→fix」ループで品質ゲート合格まで自動構築する。起動 = 対象マイルストーンの plan 承認
+argument-hint: <Mn>（例: M6。事前に /cockpit-plan で milestones/<Mn>-*/ が起案済みであること）
 ---
 
 # /cockpit-build — cockpit 開発オーケストレータ
@@ -12,12 +12,24 @@ argument-hint: <M1|M2|M3|M4|M5>
 対象マイルストーン: **$ARGUMENTS**（未指定なら M1）
 
 ## 前提の読み込み（最初に必ず）
-1. `docs/claude-multi-window-spec.md`（該当マイルストーン節）
-2. `docs/technical-decisions.md`（TD-1〜TD-6。spec の空白を埋める確定判断）
-3. `docs/harness/acceptance-criteria.md`（該当 M のチェックリスト）
+1. **`milestones/<Mn>-*/`**（変更の単位）: `plan.md`（設計判断・実装フェーズ）と
+   `acceptance.md`（この増分の受け入れ基準 = requirements-reviewer の逐条トレース対象、
+   implementer の実装スコープ定義）
+   （初期建設 M1〜M5 のみ例外: `docs/harness/acceptance-criteria.md` の該当節を使う）
+2. `docs/claude-multi-window-spec.md`（システムの現在の姿。既存不変条件の正）
+3. plan.md の `decisions:` が指す ADR ＋ `docs/technical-decisions.md`（TD-1〜7 凍結分）
 4. `docs/harness/review-rubric.md`（合格ゲート・verdict スキーマ）
 5. `CLAUDE.md`（環境制約・原則）
 6. 直近の `docs/harness/log/` があれば前回状態を把握
+
+**着手前ゲート**: `milestones/<Mn>-*/`（plan.md ＋ acceptance.md）が存在しない場合、
+実装エージェントを起動せず停止し、`/cockpit-plan <要件>` での起案を先に行うようユーザーへ促す
+（acceptance が無いまま回すと requirements-reviewer がトレース対象を持てず空回りする）。
+plan.md に「未決」の設計論点が残っている場合も停止してユーザーに諮る。
+
+**承認の記録**: ユーザーによる本コマンドの起動が plan 承認のイベント。ゲート通過後、
+plan.md の `status: draft` を `approved` に更新してから実装ループへ入る
+（既に approved / FIX 再開なら更新不要）。
 
 ## ループ手順（合格まで、最大5反復）
 
@@ -49,11 +61,20 @@ implementer 報告の `tests:` が赤、または不明なら、Bash で
 ### 5. 反復上限
 反復が5に達しても未合格なら**停止**。残存 blocking をユーザーへ提示し、
 続行/方針変更を仰ぐ。勝手に基準を下げて合格扱いにしない。
+（このときも未解消の non_blocking は手順6と同じ要領で followups.md へ書き出す。）
 
-### 6. 記録（append-only）
+### 6. 記録・出荷処理（append-only）
 `docs/harness/log/<Mn>-iter<N>.md` に各反復の verdict 要約・変更ファイル・
-最終判定を追記。合格時はサマリをユーザーへ報告し、次マイルストーンの提案で止まる
-（次 M へ自動で進まない。ユーザーの指示を待つ）。
+最終判定を追記。**合格時は出荷処理**を行う:
+1. plan.md の `status: approved` → `shipped` に更新
+2. **残課題の書き出し**: 最終反復の verdict から未解消の `non_blocking`（major/minor）を
+   集約し（重複統合・severity 順）、`milestones/<Mn>-*/followups.md` に書き出す
+   （0件ならファイルを作らない）。この場で修正ループは回さない。
+   次回以降の `/cockpit-plan` が起案時に参照する
+3. `docs/claude-multi-window-spec.md` を**現在の姿**に更新（未反映の設計があれば本文へ、
+   実装と spec の齟齬があれば spec を実態に整合。§6 に年表は書かない）
+4. サマリをユーザーへ報告して停止（残課題があれば件数と followups.md の場所を含める。
+   次 M へ自動で進まない。ユーザーの指示を待つ）。
 
 ## 原則
 - レビュアーの blocking を実装者判断で無視しない。合意できない指摘はユーザーへエスカレーション。

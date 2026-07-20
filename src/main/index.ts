@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getDb, closeDb } from './db/db'
 import { getAppSettings } from './db/appSettingsRepo'
+import { createSqliteArchiveMirrorRepo } from './db/archiveMirrorRepo'
 import {
   backfillPurposeText,
   backfillPurposeTitle,
@@ -27,9 +28,13 @@ import { generateTitle } from './pty/titleGenerator'
 import { SessionArchiver } from './archive/archiver'
 import {
   createDebouncedMetadataWriter,
+  writeSessionMetadata,
   type DebouncedMetadataWriter
 } from './archive/metadataWriter'
 import { createSqliteArchiveBrowser } from './archive/archiveBrowser'
+import { MirrorCoordinator } from './archive/mirror/mirrorCoordinator'
+import { createFsSink } from './archive/mirror/fsSink'
+import { createSpoolReader } from './archive/mirror/spoolReader'
 import { buildPipeName, TelemetryPipeServer } from './telemetry/pipeServer'
 import { createTelemetryLaunchPreparer } from './telemetry/telemetryLaunch'
 import { SessionCoordinator } from './telemetry/sessionCoordinator'
@@ -77,6 +82,11 @@ let fallbackScheduler: UsageFallbackScheduler | null = null
 let archiver: SessionArchiver | null = null
 let pipeServer: TelemetryPipeServer | null = null
 let metadataWriter: DebouncedMetadataWriter | null = null
+// M6: same forward-reference pattern as usageCoordinator/purposeDetectionCoordinator above --
+// sessionArchiver's onEntries callback (which notifies the mirror of new spool bytes) is constructed
+// before MirrorCoordinator itself, so it reads this module-level binding rather than a value captured at
+// its own construction time.
+let mirrorCoordinator: MirrorCoordinator | null = null
 
 // M5: hoisted out of archiveDirFor below so main/archive/archiveBrowser.ts's readSession path (which
 // also needs the archive root, for the exact same containment check) can share the identical computation
@@ -128,6 +138,10 @@ function createWindow(): void {
       // M4 (spec §4.2 "目的が空で開始した場合"): a third independent consumer of the same raw batch --
       // see purposeDetectionCoordinator.ts's header comment for why it stays decoupled from the two above.
       purposeDetectionCoordinator?.onJsonlEntries(sessionId, entries)
+      // M6 (spec §4.4.1): a fourth independent consumer -- notifies the mirror that new bytes landed in
+      // this session's spool transcript.jsonl copy, so it can (fire-and-forget, debounced) relay the
+      // not-yet-mirrored tail to the configured output root. A no-op while unconfigured.
+      mirrorCoordinator?.onTranscriptAppended(sessionId)
     },
     // M2 FIX (major): archive-sync failures must not stay console-only -- record-completeness is this
     // app's core purpose (spec §1/§4.4). Delegate to the coordinator, which knows how to resolve the
@@ -141,8 +155,35 @@ function createWindow(): void {
   // M2 FIX (major): debounce the metadata.json disk write instead of doing it synchronously on every
   // statusLine-triggered onSessionUpdated (which can fire on every UI render); session-close writes are
   // still immediate (see createDebouncedMetadataWriter's doc comment). before-quit flushes any remainder.
-  const sessionMetadataWriter = createDebouncedMetadataWriter()
+  //
+  // M6: the write function is wrapped (rather than left at its default) so the mirror is notified right
+  // after metadata.json is actually written to the spool -- not merely scheduled -- so it always reads the
+  // latest content when it later relays a snapshot to the configured output root (spec §4.4.1).
+  const sessionMetadataWriter = createDebouncedMetadataWriter(500, (archiveDir, summary) => {
+    writeSessionMetadata(archiveDir, summary)
+    mirrorCoordinator?.onMetadataWritten(summary.id)
+  })
   metadataWriter = sessionMetadataWriter
+
+  // M6 (spec §4.4.1, ADR-0008): the archive-output mirror. Constructed unconditionally, but every public
+  // method is a documented no-op while `archive_output_root` is unset (AC "未設定ならミラー系を起動しない")
+  // -- setOutputRoot(null) below arms nothing (no timers, no sink, no DB writes), so behavior is byte-for-
+  // byte identical to M5 in that case.
+  const mirror = new MirrorCoordinator({
+    repo: createSqliteArchiveMirrorRepo(db),
+    spool: createSpoolReader(archiveRootDir()),
+    createSink: (destRoot) => createFsSink(destRoot),
+    onStatusChanged: () => {
+      if (window.isDestroyed() || window.webContents.isDestroyed()) return
+      window.webContents.send(IpcChannels.archiveMirrorStatusUpdated, mirror.getStatusSummary())
+    }
+  })
+  mirrorCoordinator = mirror
+  mirror.setOutputRoot(getAppSettings(db).archiveOutputRoot)
+  // ADR-0008/D-6 crash recovery: re-enqueue any row an unclean shutdown left behind. No-op while
+  // unconfigured, and a fast no-op per-row when already fully caught up (see recoverOnStartup's doc
+  // comment in mirrorCoordinator.ts).
+  mirror.recoverOnStartup()
 
   const coordinator = new SessionCoordinator({
     store: createSqliteSessionStore(db),
@@ -280,7 +321,16 @@ function createWindow(): void {
   // it independently (defense-in-depth) before ever opening a transcript file.
   const archiveBrowser = createSqliteArchiveBrowser(db, archiveRootDir())
 
-  registerIpcHandlers(window, db, manager, usage, purposes, archiveBrowser)
+  registerIpcHandlers(
+    window,
+    db,
+    manager,
+    usage,
+    purposes,
+    archiveBrowser,
+    archiveRootDir(),
+    mirror
+  )
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     void window.loadURL(process.env['ELECTRON_RENDERER_URL'])

@@ -52,7 +52,14 @@ export const IpcChannels = {
   paneSettingsConfirmActivePurposeCwdChange: 'cockpit:paneSettings:confirmActivePurposeCwdChange',
   // ---- M5: read-only past-session browsing (spec §4.4) ----
   archiveListSessions: 'cockpit:archive:listSessions',
-  archiveReadSession: 'cockpit:archive:readSession'
+  archiveReadSession: 'cockpit:archive:readSession',
+  // ---- M6: archive output-destination mirroring (spec §4.4.1, ADR-0008) ----
+  archiveOutputRootChooseFolder: 'cockpit:archive:chooseOutputRootFolder',
+  archiveOutputRootSet: 'cockpit:archive:set-output-root',
+  archiveMirrorStatusGet: 'cockpit:archive:mirror-status',
+  archiveMirrorStatusUpdated: 'cockpit:archive:mirrorStatusUpdated',
+  archiveBackfillStart: 'cockpit:archive:backfill',
+  archiveBackfillProgress: 'cockpit:archive:backfillProgress'
 } as const
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels]
@@ -108,6 +115,10 @@ export interface ChooseFolderResult {
 
 export interface AppSettings {
   claudePath: string | null
+  /** M6 (spec §4.4.1, ADR-0008): configured archive-output (mirror) destination root, or null when
+   * mirroring is not configured -- in which case behavior is byte-for-byte identical to M5 (no mirror
+   * engine runs at all, main/index.ts). */
+  archiveOutputRoot: string | null
 }
 
 export interface SetClaudePathRequest {
@@ -290,3 +301,48 @@ export type ArchiveTranscriptTurn = JsonlDisplayTurn
 export type ArchiveReadSessionResult =
   | { ok: true; turns: ArchiveTranscriptTurn[]; truncated: boolean; omittedCount: number }
   | { ok: false; reason: string }
+
+// ---- M6: archive output-destination mirroring (spec §4.4.1, §5 archive_mirror table, ADR-0008) ----
+
+/** Renderer -> main: set (or, with `root: null`, clear) the archive-output mirror destination.
+ * `null` only ever clears app_settings.archive_output_root -- it never deletes anything already mirrored
+ * (D-4/D-6: mirror data is append-only and outlives the setting that produced it). */
+export interface SetArchiveOutputRootRequest {
+  root: string | null
+}
+
+/** Discriminated result (not a thrown error) so an invalid/unwritable destination is a typed, renderer-
+ * displayable outcome (D-5: "silent failure 禁止") -- covers both the pure self-mirror-containment check
+ * (shared/mirrorPlan.ts's validateMirrorRoot) and the effectful write-probe (fsSink.ts's probeWritable). */
+export type SetArchiveOutputRootResult = { ok: true } | { ok: false; reason: string }
+
+/** Per-session mirror sync state (spec §5 archive_mirror.state). Mirrors the spool (source of truth) into
+ * the configured output root; this column, and the whole archive_mirror table, is a *recoverable derived*
+ * view of that progress, never the record of truth itself (D-6). */
+export type MirrorState = 'pending' | 'synced' | 'error'
+
+export interface MirrorStatusEntry {
+  sessionId: string
+  state: MirrorState
+  lastError: string | null
+  updatedAt: number
+}
+
+/** Main -> renderer (poll response + push on `archiveMirrorStatusUpdated`): the full current mirror
+ * picture for the *currently configured* output root. `outputRoot: null` means mirroring is off
+ * (`entries` is then always `[]` -- nothing is tracked while unconfigured, spec §4.4.1). */
+export interface MirrorStatusSummary {
+  outputRoot: string | null
+  entries: MirrorStatusEntry[]
+}
+
+/** Pushed main -> renderer while an explicit backfill (spec §4.4.1 "自動実行しない") is running, and once
+ * more with `done: true` at the end -- so the settings UI can show progress and a definite completion/
+ * failure outcome rather than leaving the user guessing (D-5 silent-failure prohibition extends to this
+ * long-running operation too). */
+export interface BackfillProgressEvent {
+  totalSessions: number
+  processedSessions: number
+  failedSessions: number
+  done: boolean
+}

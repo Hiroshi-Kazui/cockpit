@@ -27,17 +27,24 @@ import {
   type ArchiveListSessionsRequest,
   type ArchiveSessionListItem,
   type ArchiveReadSessionRequest,
-  type ArchiveReadSessionResult
+  type ArchiveReadSessionResult,
+  type SetArchiveOutputRootRequest,
+  type SetArchiveOutputRootResult,
+  type MirrorStatusSummary,
+  type BackfillProgressEvent
 } from '../../shared/ipc'
 import { PtyManager } from '../pty/ptyManager'
 import { resolveClaude, ClaudeResolutionError } from '../pty/resolveClaude'
 import type { PurposeCoordinator } from '../pty/purposeCoordinator'
 import { getAllPaneSettings, setPaneCwd } from '../db/paneSettingsRepo'
-import { getAppSettings, setClaudePath } from '../db/appSettingsRepo'
+import { getAppSettings, setClaudePath, setArchiveOutputRoot } from '../db/appSettingsRepo'
 import { getAllActivePurposes } from '../db/purposeRepo'
 import { getUsageSettings, setUsageSettings } from '../db/usageSettingsRepo'
 import type { UsageCoordinator } from '../telemetry/usageCoordinator'
 import type { ArchiveBrowserPort } from '../archive/archiveBrowser'
+import type { MirrorControlPort } from '../archive/mirror/mirrorCoordinator'
+import { probeWritable } from '../archive/mirror/fsSink'
+import { validateMirrorRoot } from '../../shared/mirrorPlan'
 
 function assertPane(pane: unknown): asserts pane is 0 | 1 | 2 | 3 {
   if (typeof pane !== 'number' || !isPaneIndex(pane)) {
@@ -116,7 +123,11 @@ export function registerIpcHandlers(
   ptyManager: PtyManager,
   usageCoordinator: UsageCoordinator,
   purposeCoordinator: PurposeCoordinator,
-  archiveBrowser: ArchiveBrowserPort
+  archiveBrowser: ArchiveBrowserPort,
+  /** M6: the spool root (userData/archive) -- used only to validate a candidate output root never
+   * resolves to the spool itself or a path underneath it (ADR-0008/D-5 self-mirror prevention). */
+  spoolRoot: string,
+  mirrorControl: MirrorControlPort
 ): void {
   ipcMain.handle(IpcChannels.ptyWrite, (_event, req: PtyWriteRequest): void => {
     assertPane(req.pane)
@@ -292,6 +303,57 @@ export function registerIpcHandlers(
       return archiveBrowser.readSession(req.sessionId)
     }
   )
+
+  // ---- M6: archive output-destination mirroring (spec §4.4.1, ADR-0008) ----
+
+  ipcMain.handle(
+    IpcChannels.archiveOutputRootChooseFolder,
+    async (): Promise<ChooseFolderResult> => {
+      const result = await dialog.showOpenDialog(window, {
+        properties: ['openDirectory', 'createDirectory']
+      })
+      if (result.canceled || result.filePaths.length === 0) {
+        return { canceled: true, path: null }
+      }
+      return { canceled: false, path: result.filePaths[0] }
+    }
+  )
+
+  // D-5: "出力先はプローブ（一時ファイル作成→削除）で検証" -- validated in two steps before ever
+  // persisting/activating a new root: (1) the pure self-mirror-containment check (never inside the
+  // spool), then (2) an effectful write probe. `root: null` clears the setting and always succeeds (spec
+  // §4.4.1 "解除" -- clearing never needs to write-probe anything).
+  ipcMain.handle(
+    IpcChannels.archiveOutputRootSet,
+    async (_event, req: SetArchiveOutputRootRequest): Promise<SetArchiveOutputRootResult> => {
+      if (req.root === null) {
+        setArchiveOutputRoot(db, null)
+        mirrorControl.setOutputRoot(null)
+        return { ok: true }
+      }
+      assertNonEmptyString(req.root, 'root')
+      const validation = validateMirrorRoot(spoolRoot, req.root)
+      if (!validation.ok) return { ok: false, reason: validation.reason }
+      const probe = await probeWritable(req.root)
+      if (!probe.ok) return { ok: false, reason: probe.reason }
+      setArchiveOutputRoot(db, req.root)
+      mirrorControl.setOutputRoot(req.root)
+      return { ok: true }
+    }
+  )
+
+  ipcMain.handle(IpcChannels.archiveMirrorStatusGet, (): MirrorStatusSummary => {
+    return mirrorControl.getStatusSummary()
+  })
+
+  // D-4 "自動実行しない": only ever runs when the renderer explicitly invokes it. Progress is streamed
+  // back over `archiveBackfillProgress` (D-5: never leave a long-running operation unaccounted-for).
+  ipcMain.handle(IpcChannels.archiveBackfillStart, async (): Promise<void> => {
+    await mirrorControl.startBackfill((event: BackfillProgressEvent) => {
+      if (window.isDestroyed() || window.webContents.isDestroyed()) return
+      window.webContents.send(IpcChannels.archiveBackfillProgress, event)
+    })
+  })
 }
 
 export function unregisterIpcHandlers(): void {

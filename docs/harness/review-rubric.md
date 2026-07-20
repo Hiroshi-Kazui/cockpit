@@ -39,7 +39,10 @@ summary: <1-2文の総評>
 ```
 
 blocking が空配列なら `status: PASS`。1件でもあれば `status: FAIL`。
-オーケストレータは `status` と `blocking` 行だけをパースして次アクションを決める。
+オーケストレータは `status` と `blocking` 行をパースして次アクションを決め、
+ループ終了時（合格・5反復打ち切りとも）に未解消の `non_blocking` を
+`milestones/<Mn>-*/followups.md` へ集約する（蒸発させない。修正はその場で行わず、
+次回以降の `/cockpit-plan` が取り込みを判断する）。
 
 ## レビュアー別の重点（詳細は各 agent 定義）
 
