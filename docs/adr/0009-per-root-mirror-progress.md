@@ -1,7 +1,7 @@
 # ADR-0009: ミラー進捗の per-root 化（archive_mirror 複合キー）
 
 - 日付: 2026-07-21
-- 状態: proposed（M7 出荷で accepted へ）
+- 状態: accepted（M7 出荷済み、2026-07-21）
 - 関連: ADR-0008（アーカイブミラー方式。本 ADR はその D-6 データモデルを**部分的に supersede**）、
   spec §4.4.1 / §5、milestones/M7-mirror-hardening/（起案元）、milestones/M6-archive-output/followups.md
 - 先行の制約: M6 は `archive_mirror` を session_id 単一行で出荷した（spec §5）。このため出力先を

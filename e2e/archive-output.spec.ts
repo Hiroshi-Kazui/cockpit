@@ -42,6 +42,9 @@ test.describe('archive output-destination mirroring (M6, spec §4.4.1)', () => {
     const scratchCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-e2e-mirror-cwd-'))
     const mirrorRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-e2e-mirror-dest-'))
     const purposeText = `E2Eミラーテスト-${Date.now()}`
+    // ADR-0009 A -> B -> A switching-flow step (below) creates this lazily; declared here (not inside the
+    // try block) so the finally block can clean it up regardless of where an early failure occurs.
+    let mirrorRootB = ''
 
     try {
       launched = await launchApp()
@@ -164,11 +167,129 @@ test.describe('archive output-destination mirroring (M6, spec §4.4.1)', () => {
 
         await expect(page.locator('.status-bar__mirror--synced')).toBeVisible({ timeout: 20_000 })
       })
+
+      // ADR-0009 / plan.md Phase 4 "E2E は切替フローで確認": unit tests (mirrorCoordinator.test.ts) fully
+      // exercise the A -> B -> A byte-level resume; this step confirms the actual UI-driven switching flow
+      // (フォルダを選択… twice) works end-to-end without ever surfacing an error, and that mirroring keeps
+      // working (not just "doesn't crash") once switched back.
+      await test.step('switching the output root away and back (A -> B -> A) resumes automatically via the UI, without erroring', async () => {
+        mirrorRootB = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-e2e-mirror-destB-'))
+
+        await page.click('button:has-text("アーカイブ出力先")')
+        await expect(page.locator('.archive-output-settings')).toBeVisible()
+        await app.evaluate(({ dialog }, dir) => {
+          dialog.showOpenDialog = () =>
+            Promise.resolve({ canceled: false, filePaths: [dir] } as Electron.OpenDialogReturnValue)
+        }, mirrorRootB)
+        await page.click('button:has-text("フォルダを選択…")')
+        await expect(page.locator('.archive-output-settings__current-value')).toHaveText(
+          mirrorRootB
+        )
+        await page.keyboard.press('Escape')
+        await expect(page.locator('.archive-output-settings')).toHaveCount(0)
+
+        await focusPaneTerminal(page, 0)
+        await page.keyboard.type('message while output root is B')
+        await page.keyboard.press('Enter')
+        await expect(page.locator('.pane-terminal').nth(0)).toContainText('了解しました', {
+          timeout: 10_000
+        })
+        await expect
+          .poll(() => fs.existsSync(path.join(mirrorRootB, sessionId, 'transcript.jsonl')), {
+            timeout: 20_000
+          })
+          .toBe(true)
+
+        // Switch back to A.
+        await page.click('button:has-text("アーカイブ出力先")')
+        await expect(page.locator('.archive-output-settings')).toBeVisible()
+        await app.evaluate(({ dialog }, dir) => {
+          dialog.showOpenDialog = () =>
+            Promise.resolve({ canceled: false, filePaths: [dir] } as Electron.OpenDialogReturnValue)
+        }, mirrorRoot)
+        await page.click('button:has-text("フォルダを選択…")')
+        await expect(page.locator('.archive-output-settings__current-value')).toHaveText(mirrorRoot)
+        await page.keyboard.press('Escape')
+        await expect(page.locator('.archive-output-settings')).toHaveCount(0)
+
+        // ADR-0009: A's own per-root progress resumes automatically -- no permanent error (the M6
+        // single-row schema's safe-stop this milestone supersedes).
+        await expect(page.locator('.status-bar__mirror--synced')).toBeVisible({ timeout: 20_000 })
+        await expect(page.locator('.status-bar__mirror--error')).toHaveCount(0)
+
+        // Further growth mirrors correctly to A once resumed (proves an actual working resume, not just
+        // the absence of an error badge).
+        await focusPaneTerminal(page, 0)
+        await page.keyboard.type('message after switching back to A')
+        await page.keyboard.press('Enter')
+        await expect(page.locator('.pane-terminal').nth(0)).toContainText('了解しました', {
+          timeout: 10_000
+        })
+        await expect
+          .poll(
+            () =>
+              fs
+                .readFileSync(path.join(mirrorRoot, sessionId, 'transcript.jsonl'), 'utf-8')
+                .includes('message after switching back to A'),
+            { timeout: 20_000 }
+          )
+          .toBe(true)
+      })
     } finally {
       if (launched) await closeApp(launched)
       fs.rmSync(scratchCwd, { recursive: true, force: true })
       fs.rmSync(mirrorRoot, { recursive: true, force: true })
+      if (mirrorRootB) fs.rmSync(mirrorRootB, { recursive: true, force: true })
       cleanupFakeClaudeTranscripts()
+    }
+  })
+})
+
+// M7 followup (UX: フォーカス復帰先の不一致) -- opening the archive-output settings dialog from either the
+// header button or StatusBar's mirror indicator must restore focus to whichever one actually opened it.
+// No fake-claude/session needed: only requires an output root configured (so the StatusBar indicator
+// renders at all) and the header button, both reachable from the plain app shell.
+test.describe('archive output settings dialog: opener-based focus restore (M7 followup)', () => {
+  test('closing (Escape) restores focus to the header button or the status bar indicator, matching whichever opened it', async () => {
+    let launched: LaunchedApp | undefined
+    const mirrorRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-e2e-focus-mirror-'))
+
+    try {
+      launched = await launchApp()
+      const { app, window: page } = launched
+
+      // Configure an output root so StatusBar's mirror indicator renders at all.
+      const headerButton = page.locator('.app-header__archive-button:has-text("アーカイブ出力先")')
+      await headerButton.click()
+      await expect(page.locator('.archive-output-settings')).toBeVisible()
+      await app.evaluate(({ dialog }, dir) => {
+        dialog.showOpenDialog = () =>
+          Promise.resolve({ canceled: false, filePaths: [dir] } as Electron.OpenDialogReturnValue)
+      }, mirrorRoot)
+      await page.click('button:has-text("フォルダを選択…")')
+      await expect(page.locator('.archive-output-settings__current-value')).toHaveText(mirrorRoot)
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.archive-output-settings')).toHaveCount(0)
+
+      // 1) Opened via the header button -> closing returns focus there.
+      await headerButton.click()
+      await expect(page.locator('.archive-output-settings')).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.archive-output-settings')).toHaveCount(0)
+      await expect(headerButton).toBeFocused()
+
+      // 2) Opened via the StatusBar mirror indicator -> closing returns focus there instead, not the
+      // header button.
+      const mirrorIndicator = page.locator('.status-bar__mirror')
+      await expect(mirrorIndicator).toBeVisible({ timeout: 20_000 })
+      await mirrorIndicator.click()
+      await expect(page.locator('.archive-output-settings')).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(page.locator('.archive-output-settings')).toHaveCount(0)
+      await expect(mirrorIndicator).toBeFocused()
+    } finally {
+      if (launched) await closeApp(launched)
+      fs.rmSync(mirrorRoot, { recursive: true, force: true })
     }
   })
 })

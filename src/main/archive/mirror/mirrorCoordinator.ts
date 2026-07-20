@@ -1,5 +1,5 @@
-// Orchestrates the M6 archive-output mirror (spec §4.4.1, ADR-0008): asynchronously copies the spool's
-// append-only growth (and metadata.json snapshots) into a user-configured output root, entirely
+// Orchestrates the archive-output mirror (spec §4.4.1, ADR-0008 + ADR-0009): asynchronously copies the
+// spool's append-only growth (and metadata.json snapshots) into a user-configured output root, entirely
 // fire-and-forget with respect to pty/renderer (D-2 -- never blocks a claude session or the UI thread).
 //
 // Design (mirrors sessionCoordinator.ts's dependency-inversion style: narrow injected ports, no direct
@@ -9,16 +9,28 @@
 //   onMetadataWritten calls into one sync pass, and a change that arrives *while* a pass is running is
 //   remembered and re-run immediately after (never dropped).
 // - A failed pass records archive_mirror.state='error' + last_error and retries with exponential backoff
-//   (never silently gives up, never blocks the caller -- D-2/D-5).
-// - setOutputRoot(newRoot) rebaselines every currently-known spool session's synced_bytes to its *current*
-//   spool size before switching dest_root: only bytes appended *after* this point are ever auto-mirrored
-//   to the new root (D-4 "新規分のみ新出力先へ同期される"). Pre-existing history is left for an explicit
-//   startBackfill() call (D-4 "自動実行しない").
+//   (never silently gives up, never blocks the caller -- D-2/D-5) -- *unless* the row is the ADR-0009
+//   sentinel (a confirmed content-mismatch, permanent, never auto-retried; see UNRECOVERABLE_SYNCED_BYTES).
+// - setOutputRoot(newRoot) rebaselines every currently-known spool session's per-(session, newRoot) progress
+//   row (ADR-0009: archive_mirror is keyed by (session_id, dest_root), so switching roots never erases a
+//   different root's own progress) before switching dest_root: only bytes appended *after* this point are
+//   ever auto-mirrored to a brand-new root (D-4 "新規分のみ新出力先へ同期される"). Pre-existing history is
+//   left for an explicit startBackfill() call (D-4 "自動実行しない"). Switching *back* to a root this
+//   session was already tracked against re-verifies (rather than blindly trusting) its recorded progress
+//   against the destination's actual current content before resuming (ADR-0009 decision 3) -- this is what
+//   lets an A -> B -> A round trip resume automatically instead of the M6 single-row schema's permanent
+//   safe-stop.
 // - recoverOnStartup() re-enqueues every archive_mirror row for the currently-configured root
 //   unconditionally; a session that's already fully caught up is a cheap no-op (computeTranscriptMirrorDiff
 //   returns 'noop'), so this safely absorbs whatever an unclean shutdown left behind (D-6 crash recovery).
 import type { ArchiveMirrorRepoPort, ArchiveMirrorRow } from '../../db/archiveMirrorRepo'
-import { computeTranscriptMirrorDiff } from '../../../shared/mirrorPlan'
+import {
+  computeBackfillPlan,
+  computeResumeVerificationRange,
+  computeTranscriptMirrorDiff,
+  isUnrecoverableSyncedBytes,
+  UNRECOVERABLE_SYNCED_BYTES
+} from '../../../shared/mirrorPlan'
 import type { BackfillProgressEvent, MirrorStatusSummary } from '../../../shared/ipc'
 import type { ArchiveSink } from './sink'
 import type { SpoolReader } from './spoolReader'
@@ -49,17 +61,6 @@ const DEFAULT_DEBOUNCE_MS = 1000
 const DEFAULT_BASE_RETRY_MS = 2000
 const DEFAULT_MAX_RETRY_MS = 60_000
 
-/** Sentinel `synced_bytes` value recorded for a session whose destination content cannot be safely
- * trusted as a resume point (rebaselineSession's content-prefix verification below failed, or could not
- * be completed). Deliberately far larger than any real transcript could ever grow to, so
- * computeTranscriptMirrorDiff's existing "recorded progress exceeds spool size" guard permanently refuses
- * every future automatic sync attempt for this session+root combination -- `sink.appendTranscript` is
- * then never reached again, so the destination can never be further corrupted. This reuses the *existing*
- * append-only-violation detection (shared/mirrorPlan.ts) instead of adding a new schema column to track
- * "permanently stuck" separately from a merely transient failure (which must keep retrying, D-2's
- * "復旧後に追い付く") -- the single-row archive_mirror schema (spec §5) is unchanged. */
-const UNRECOVERABLE_SYNCED_BYTES = Number.MAX_SAFE_INTEGER
-
 export class MirrorCoordinator implements MirrorControlPort {
   private readonly repo: ArchiveMirrorRepoPort
   private readonly spool: SpoolReader
@@ -77,6 +78,12 @@ export class MirrorCoordinator implements MirrorControlPort {
   private readonly retryDelays = new Map<string, number>()
   private readonly inFlight = new Set<string>()
   private readonly pendingRerun = new Set<string>()
+  // M7 followup (structure #2): while a backfill loop is running, per-session markSynced/recordError calls
+  // below skip their individual onStatusChanged() push (each one would otherwise trigger a fresh
+  // getStatusSummary() -- an O(session-count) scan of archive_mirror -- for every one of the N sessions
+  // backfill touches, an O(N^2) total cost). A single push happens once the whole backfill completes
+  // instead; the UI already gets fine-grained progress via startBackfill's own onProgress callback.
+  private backfillDepth = 0
 
   constructor(deps: MirrorCoordinatorDeps) {
     this.repo = deps.repo
@@ -131,26 +138,16 @@ export class MirrorCoordinator implements MirrorControlPort {
   }
 
   /** ADR-0008/D-4: switching (or first configuring) the output root never auto-copies pre-existing spool
-   * history to a destination that has nothing there yet -- such sessions are rebaselined to "already
-   * caught up as of right now", so only future appends/metadata writes flow to the new root automatically.
-   * `null` disables mirroring entirely (cancels all in-flight timers; existing archive_mirror rows and any
-   * already-mirrored destination files are left untouched, per D-4).
+   * history to a root that has nothing there yet for this session -- such sessions are rebaselined to
+   * "already caught up as of right now", so only future appends/metadata writes flow to the new root
+   * automatically. `null` disables mirroring entirely (cancels all in-flight timers; existing archive_mirror
+   * rows and any already-mirrored destination files are left untouched, per D-4).
    *
    * This is also the entry point main/index.ts calls at app startup to restore a persisted root -- in that
-   * case `newRoot` already has archive_mirror rows from before the restart, each already pointing at this
-   * exact root, so rebaselineSession's own check below (existing row already tracks this root -> leave it
-   * alone) is what protects those rows' in-progress sync state; recoverOnStartup then picks up any tail an
-   * unclean shutdown left unsynced (D-6). A blind, unconditional rebaseline here would otherwise silently
-   * discard that unsynced tail on every single restart (crash-recovery bug, fixed by rebaselineSession's
-   * row check, not a separate startup code path).
-   *
-   * A session whose destination already has *real* content under the new root (a genuine "switch back to
-   * a root visited before, then away, then back" -- the single-row archive_mirror schema, spec §5, retains
-   * no per-root history once a session's row has moved to a different dest_root in between) is neither
-   * blindly skip-baselined nor blindly trusted: rebaselineSession verifies the destination's existing bytes
-   * are a genuine spool *prefix* before resuming automatic sync against it, and refuses (state='error')
-   * rather than risk silently corrupting it if they are not (e.g. a post-skip *suffix* left over from a
-   * prior visit to this same root). */
+   * case `newRoot` already has archive_mirror rows from before the restart, each already keyed to this exact
+   * root (ADR-0009), so rebaselineSession's own resume-verification below is what protects those rows'
+   * in-progress sync state; recoverOnStartup then picks up any tail an unclean shutdown left unsynced (D-6).
+   */
   setOutputRoot(newRoot: string | null): void {
     const prevRoot = this.currentRoot
     for (const sessionId of [...this.debounceTimers.keys(), ...this.retryTimers.keys()]) {
@@ -173,42 +170,56 @@ export class MirrorCoordinator implements MirrorControlPort {
   }
 
   /**
-   * Decides how (or whether) to start tracking `sessionId` against `root` when the output root is being
-   * configured/switched. Three cases:
+   * ADR-0009: called once per (session, root) whenever setOutputRoot switches to `root`, deciding how to
+   * (re)start tracking `sessionId` there. With the composite `(session_id, dest_root)` key, each root keeps
+   * its own row -- switching away and back no longer erases progress the way the M6 single-row schema did.
+   * Four cases:
    *
-   * 1. A row already tracks this exact root (`existing.destRoot === root`) -- the app is restarting and
-   *    restoring a persisted root, never actually "left" in between. Preserved verbatim: blindly
-   *    re-baselining it to "fully caught up" would silently drop any unsynced tail a crash left behind
-   *    (ADR-0008/D-6). recoverOnStartup / the next debounced sync picks up exactly where this row left off.
-   * 2. The destination is genuinely empty (`destSize === 0`) -- nothing there to conflict with, so the
-   *    ordinary D-4 skip-history baseline applies (`synced_bytes := spoolSize`; only future growth mirrors
-   *    automatically).
-   * 3. The destination already has real content under this root from a *prior* visit (switched away and
-   *    back -- the single-row schema, spec §5, no longer remembers that prior visit's own progress once
-   *    the row moved to a different dest_root in between). Its existing bytes are read back and compared,
-   *    byte-for-byte, against the spool's own leading bytes of the same length:
-   *      - If they match, the destination genuinely holds a spool *prefix* -- safe to resume exactly where
-   *        it leaves off (`synced_bytes := destSize`), aligning syncTranscript's future read offset with
-   *        its write offset (`sink.statTranscript`) so they can never diverge again.
-   *      - If they don't match (or the safety check itself fails, e.g. the destination becomes unreadable
-   *        mid-check), the destination's bytes are a post-skip *suffix*, not a prefix -- resuming would
-   *        read the wrong spool range and silently corrupt it. Refused outright: recorded with the
-   *        UNRECOVERABLE_SYNCED_BYTES sentinel (permanently keeps computeTranscriptMirrorDiff refusing to
-   *        proceed for this session+root, so `sink.appendTranscript` is never reached again) and
-   *        `state='error'`.
+   * 0. A sentinel (permanent, confirmed content-mismatch) row already exists for this exact
+   *    (session, root) -- left completely untouched: no re-verification, no retry (followups: "sentinel 行
+   *    はリトライ再スケジュールを抑止", preserving the original diagnostic last_error).
+   * 1. No row yet for this (session, root) and the destination is empty -- ordinary D-4 skip-history
+   *    baseline: `synced_bytes := spoolSize`, only future growth mirrors automatically.
+   * 2. No row yet but the destination already has real content (e.g. right after this schema was migrated
+   *    from M6's single-row shape, or a stray leftover from a much older run) -- verified as a genuine,
+   *    untouched spool prefix (gap=0) before being adopted; sentinel'd if not.
+   * 3. A (non-sentinel) row already exists for this exact root -- a genuine "switched away, now back"
+   *    resume. Its recorded `synced_bytes` (a spool-logical offset, possibly ahead of the destination's real
+   *    size by a permanent D-4 skip-gap established the first time this root was configured for this
+   *    session) is re-verified against the destination's *current* real size and content before resuming
+   *    automatic sync -- catching the destination having been modified out-of-band while this session was
+   *    mirrored elsewhere (decision 3). Nothing is written back to the DB when verification confirms an
+   *    already-'synced'/'pending' row is still correct (writing again would risk racing the ordinary sync
+   *    engine also acting on the same row, see mirrorCoordinator.test.ts's startup-recovery regression
+   *    test) -- but a row recovering from a (non-sentinel) transient error *is* written, clearing it back
+   *    to 'synced' now that the destination has been confirmed reachable and consistent again.
+   *
+   * A transient I/O failure *while verifying* (destination temporarily unreachable) is distinguished from a
+   * genuine, confirmed content mismatch (decision 4, followups "transient I/O 失敗が恒久 sentinel に昇格"):
+   * the former is recorded as an ordinary (retryable) error and retried; the latter is sentinel'd and never
+   * retried automatically.
    */
   private async rebaselineSession(sessionId: string, root: string): Promise<void> {
-    const existing = this.repo.get(sessionId)
-    if (existing && existing.destRoot === root) {
+    // FIX (major, code review): captured here -- at the method's very entry, before any `await` -- and
+    // used exclusively from here on, the same discipline `runOnce` already follows. Capturing `this.sink`
+    // only *after* an await (as a prior revision did) would let a `setOutputRoot` call that lands during
+    // that await swap in a *different* root's sink while `root` (the argument) still names the old one,
+    // evaluating the wrong destination's content against this session's row.
+    const sink = this.sink
+    if (!sink) return // setOutputRoot(null) raced this call -- nothing to do
+
+    const existing = this.repo.get(sessionId, root)
+    if (existing?.state === 'error' && isUnrecoverableSyncedBytes(existing.syncedBytes)) {
       return
     }
+
     const spoolSize = await this.spool.statSpoolTranscript(sessionId)
     if (spoolSize === null) return
 
     try {
-      const destSize = this.sink ? ((await this.sink.statTranscript(sessionId)) ?? 0) : 0
+      const destSize = (await sink.statTranscript(sessionId)) ?? 0
 
-      if (destSize === 0) {
+      if (!existing && destSize === 0) {
         this.repo.upsert({
           sessionId,
           destRoot: root,
@@ -222,55 +233,73 @@ export class MirrorCoordinator implements MirrorControlPort {
         return
       }
 
-      const boundedLength = Math.min(destSize, spoolSize)
-      const [spoolPrefix, destPrefix] = await Promise.all([
-        this.spool.readSpoolBytes(sessionId, 0, boundedLength),
-        this.sink!.readTranscriptPrefix(sessionId, boundedLength)
-      ])
+      // Case 2 (no prior row, real content already there) candidates a gap=0 baseline (recordedSyncedBytes
+      // := destSize); case 3 (existing row) uses its own recorded logical offset, gap and all.
+      const recordedSyncedBytes = existing ? existing.syncedBytes : destSize
+      const range = computeResumeVerificationRange({ destSize, recordedSyncedBytes })
 
-      if (destSize <= spoolSize && spoolPrefix.equals(destPrefix)) {
-        this.repo.upsert({
-          sessionId,
-          destRoot: root,
-          syncedBytes: destSize,
-          metaSynced: false,
-          state: 'synced',
-          lastError: null,
-          updatedAt: this.now()
-        })
-        this.onStatusChanged()
-        return
+      if (range.ok) {
+        const [spoolBytes, destBytes] = await Promise.all([
+          this.spool.readSpoolBytes(sessionId, range.offset, range.length),
+          sink.readTranscriptPrefix(sessionId, destSize)
+        ])
+        if (spoolBytes.equals(destBytes)) {
+          // Only write when there is something to actually change: a brand-new row being adopted, or an
+          // existing row recovering from a (non-sentinel) transient error this same verification just
+          // cleared. An already-'synced'/'pending' existing row is left completely untouched -- writing the
+          // same recordedSyncedBytes back here would risk regressing a *newer* value a concurrently-running
+          // ordinary sync pass (runOnce/syncTranscript) may have already written for this exact row (see
+          // mirrorCoordinator.test.ts's startup-recovery regression test, where exactly this race mattered).
+          if (!existing || existing.state === 'error') {
+            this.repo.upsert({
+              sessionId,
+              destRoot: root,
+              syncedBytes: recordedSyncedBytes,
+              metaSynced: existing?.metaSynced ?? false,
+              state: 'synced',
+              lastError: null,
+              updatedAt: this.now()
+            })
+            this.onStatusChanged()
+          }
+          return
+        }
       }
 
+      // Either the recorded/destination sizes are structurally impossible (range not ok) or a genuine
+      // content mismatch was found -- a confirmed, deterministic problem (not an I/O hiccup), so this is
+      // permanent (ADR-0009 decisions 3/4): sentinel-block, never auto-append here again.
       this.repo.upsert({
         sessionId,
         destRoot: root,
         syncedBytes: UNRECOVERABLE_SYNCED_BYTES,
         metaSynced: false,
         state: 'error',
-        lastError:
-          `cannot resume mirroring session ${sessionId} to ${root}: its existing ${destSize} byte(s) ` +
-          'there do not match a genuine prefix of the spool (likely left over from a different sync ' +
-          'history against this same output root) -- refusing to risk corrupting it with an automatic append',
+        lastError: range.ok
+          ? `出力先 ${root} のセッション ${sessionId} の既存データがスプールの正当な内容と一致しません` +
+            '（外部で変更された可能性があります）。自動同期を中止しました'
+          : range.reason,
         updatedAt: this.now()
       })
       this.onStatusChanged()
     } catch (err) {
-      // The safety check itself failed (e.g. the destination became unreadable mid-verification) --
-      // treat as inconclusive and refuse, same as an explicit prefix mismatch above, rather than silently
-      // falling back to an unverified resume.
+      // Transient I/O failure while verifying (e.g. the destination briefly unreachable) -- do NOT
+      // escalate to the permanent sentinel (ADR-0009 decision 4). Recorded visibly (D-5) with the
+      // previously-recorded synced_bytes preserved (never the sentinel value) so a retry can succeed once
+      // the destination is reachable again, instead of being permanently refused.
       this.repo.upsert({
         sessionId,
         destRoot: root,
-        syncedBytes: UNRECOVERABLE_SYNCED_BYTES,
+        syncedBytes: existing?.syncedBytes ?? 0,
         metaSynced: existing?.metaSynced ?? false,
         state: 'error',
-        lastError: `could not verify session ${sessionId}'s existing content at ${root}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        lastError:
+          `出力先 ${root} のセッション ${sessionId} を確認できません` +
+          `（一時的なエラーの可能性があります）: ${err instanceof Error ? err.message : String(err)}`,
         updatedAt: this.now()
       })
       this.onStatusChanged()
+      this.scheduleRetry(sessionId, () => this.rebaselineSession(sessionId, root))
     }
   }
 
@@ -287,6 +316,9 @@ export class MirrorCoordinator implements MirrorControlPort {
 
   getStatusSummary(): MirrorStatusSummary {
     if (this.currentRoot === null) return { outputRoot: null, entries: [] }
+    // ADR-0009: scoped to the currently-configured root's own rows only -- a session's rows for other
+    // (previously-visited) roots are never mixed into this list (AC "状態UI・バックフィルの対象が「現在の
+    // 出力先の行」に絞られ、旧 root の行が混入表示されない").
     const rows = this.repo.listForDestRoot(this.currentRoot)
     return {
       outputRoot: this.currentRoot,
@@ -302,25 +334,8 @@ export class MirrorCoordinator implements MirrorControlPort {
   /** ADR-0008/D-4 "自動実行しない": the one explicit way to fully replicate a past session's history to
    * the currently-configured root, bypassing the "skip pre-existing history" baseline normal automatic
    * mirroring uses. Reports progress (and a final `done: true`) via `onProgress` so a long-running
-   * backfill is never silently unaccounted-for (D-5).
-   *
-   * Implementation: rebases `synced_bytes` down to the destination's *real, currently-verified* size
-   * (never a blind literal 0 -- see syncTranscript's doc comment on why `synced_bytes`/destination-size can
-   * legitimately differ) before running one ordinary sync pass. For a session whose destination is still
-   * empty (the "skipped history" case, destSize === 0), this makes the ordinary pass copy the *entire*
-   * spool content from scratch, which is safe -- there is nothing at the destination yet to conflict with.
-   * For a session that already has real content there and was never skipped (`recordedSyncedBytes` already
-   * equals `destSize`, i.e. every mirrored byte genuinely is a spool *prefix*), this is a no-op rebase
-   * followed by an ordinary catch-up sync.
-   *
-   * If the destination already holds *some* real bytes (`destSize > 0`) for a session whose recorded
-   * progress is *ahead* of that (`recordedSyncedBytes > destSize`), those destination bytes are known to be
-   * a post-skip *suffix* of the spool (e.g. spool[100:150] after a rebaseline skipped spool[0:100]), not a
-   * prefix -- rebasing `synced_bytes` down to `destSize` and resuming a normal sync would then read the
-   * *wrong* spool range and append it, corrupting the destination with duplicated/interleaved content. That
-   * combination is refused outright (recorded as `state='error'`) rather than silently corrupting it: under
-   * append-only, a full backfill genuinely cannot be done safely for that session without first clearing
-   * its destination by hand, which this app has no delete path for (by design). */
+   * backfill is never silently unaccounted-for (D-5). Per-session status pushes are suppressed during the
+   * loop (`backfillDepth`, see its doc comment) -- one aggregate push happens once the whole backfill ends. */
   async startBackfill(onProgress: (event: BackfillProgressEvent) => void): Promise<void> {
     if (this.currentRoot === null || this.sink === null) {
       onProgress({ totalSessions: 0, processedSessions: 0, failedSessions: 0, done: true })
@@ -334,48 +349,46 @@ export class MirrorCoordinator implements MirrorControlPort {
     let failed = 0
     onProgress({ totalSessions: total, processedSessions: 0, failedSessions: 0, done: total === 0 })
 
-    for (const sessionId of sessionIds) {
-      try {
-        const destSize = (await sink.statTranscript(sessionId)) ?? 0
-        const existing = this.repo.get(sessionId)
-        const recordedSyncedBytes =
-          existing && existing.destRoot === root ? existing.syncedBytes : 0
+    this.backfillDepth++
+    try {
+      for (const sessionId of sessionIds) {
+        try {
+          const destSize = (await sink.statTranscript(sessionId)) ?? 0
+          const existing = this.repo.get(sessionId, root)
+          const recordedSyncedBytes = existing?.syncedBytes ?? 0
+          const plan = computeBackfillPlan({ destSize, recordedSyncedBytes })
 
-        if (destSize > 0 && recordedSyncedBytes > destSize) {
-          this.recordError(
-            sessionId,
-            root,
-            new Error(
-              `cannot backfill session ${sessionId}: its destination already holds ${destSize} byte(s) ` +
-                'that are not a full prefix of the spool (history was previously skipped for this output ' +
-                'root) -- a full backfill would corrupt the already-mirrored content, so it was refused'
-            )
-          )
+          if (plan.action === 'refuse') {
+            this.recordError(sessionId, root, new Error(plan.reason))
+            failed++
+          } else {
+            this.repo.upsert({
+              sessionId,
+              destRoot: root,
+              syncedBytes: plan.rebaselineSyncedBytes,
+              metaSynced: existing?.metaSynced ?? false,
+              state: 'pending',
+              lastError: null,
+              updatedAt: this.now()
+            })
+            await this.runOnce(sessionId)
+            const row = this.repo.get(sessionId, root)
+            if (row?.state === 'error') failed++
+          }
+        } catch {
           failed++
-        } else {
-          this.repo.upsert({
-            sessionId,
-            destRoot: root,
-            syncedBytes: destSize,
-            metaSynced: existing?.destRoot === root ? existing.metaSynced : false,
-            state: 'pending',
-            lastError: null,
-            updatedAt: this.now()
-          })
-          await this.runOnce(sessionId)
-          const row = this.repo.get(sessionId)
-          if (row?.state === 'error') failed++
         }
-      } catch {
-        failed++
+        processed++
+        onProgress({
+          totalSessions: total,
+          processedSessions: processed,
+          failedSessions: failed,
+          done: processed === total
+        })
       }
-      processed++
-      onProgress({
-        totalSessions: total,
-        processedSessions: processed,
-        failedSessions: failed,
-        done: processed === total
-      })
+    } finally {
+      this.backfillDepth--
+      if (this.backfillDepth === 0) this.onStatusChanged()
     }
   }
 
@@ -394,6 +407,15 @@ export class MirrorCoordinator implements MirrorControlPort {
     const root = this.currentRoot
     const sink = this.sink
     try {
+      const existing = this.repo.get(sessionId, root)
+      if (existing?.state === 'error' && isUnrecoverableSyncedBytes(existing.syncedBytes)) {
+        // Permanently blocked for this root (confirmed content mismatch, ADR-0009 decision 4) -- return
+        // without touching anything: no retry rearm (followups "60s バックオフで永続リトライ"), and
+        // critically no call into syncMetadata either, whose markSynced would otherwise silently clobber
+        // this sentinel's state='error' back to 'synced' (and the diagnostic last_error along with it,
+        // followups "診断 last_error がリトライで上書き").
+        return
+      }
       await this.syncTranscript(sessionId, root, sink)
       await this.syncMetadata(sessionId, root, sink)
       this.retryDelays.delete(sessionId)
@@ -413,7 +435,13 @@ export class MirrorCoordinator implements MirrorControlPort {
     }
   }
 
-  private scheduleRetry(sessionId: string): void {
+  /** Schedules `operation` (defaulting to an ordinary `runOnce` retry) after an exponential backoff.
+   * Generalized (rather than hardcoded to `runOnce`) so rebaselineSession's own transient-I/O-failure path
+   * can reuse the same backoff bookkeeping to retry *verification* instead of an ordinary sync pass. */
+  private scheduleRetry(
+    sessionId: string,
+    operation: () => Promise<void> = () => this.runOnce(sessionId)
+  ): void {
     const prevDelay = this.retryDelays.get(sessionId) ?? this.baseRetryDelayMs / 2
     const nextDelay = Math.min(prevDelay * 2, this.maxRetryDelayMs)
     this.retryDelays.set(sessionId, nextDelay)
@@ -421,7 +449,7 @@ export class MirrorCoordinator implements MirrorControlPort {
     if (existing) clearTimeout(existing)
     const timer = setTimeout(() => {
       this.retryTimers.delete(sessionId)
-      void this.runOnce(sessionId)
+      void operation()
     }, nextDelay)
     this.retryTimers.set(sessionId, timer)
   }
@@ -443,13 +471,8 @@ export class MirrorCoordinator implements MirrorControlPort {
     const spoolSize = await this.spool.statSpoolTranscript(sessionId)
     if (spoolSize === null) return // nothing archived to this session yet
 
-    const existing = this.repo.get(sessionId)
-    // A row for a *different* dest_root (stale/never rebaselined -- e.g. a brand-new session created
-    // after the root was already set, which setOutputRoot's rebaseline pass never saw) starts fresh: this
-    // genuinely is new data for the current root, so a synced_bytes baseline of 0 is correct here, not a
-    // bug -- setOutputRoot's skip-history behavior only applies to sessions that already existed *before*
-    // the switch (mirrorCoordinator.test.ts covers both cases).
-    const syncedBytes = existing && existing.destRoot === root ? existing.syncedBytes : 0
+    const existing = this.repo.get(sessionId, root)
+    const syncedBytes = existing?.syncedBytes ?? 0
 
     const diff = computeTranscriptMirrorDiff({ spoolSize, syncedBytes })
     if (diff.action === 'error') {
@@ -469,7 +492,7 @@ export class MirrorCoordinator implements MirrorControlPort {
     const content = await this.spool.readSpoolMetadata(sessionId)
     if (content === null) return
     await sink.writeMetadata(sessionId, content)
-    const existing = this.repo.get(sessionId)
+    const existing = this.repo.get(sessionId, root)
     this.markSynced(sessionId, root, existing?.syncedBytes ?? 0, true)
   }
 
@@ -489,15 +512,15 @@ export class MirrorCoordinator implements MirrorControlPort {
       updatedAt: this.now()
     }
     this.repo.upsert(row)
-    this.onStatusChanged()
+    if (this.backfillDepth === 0) this.onStatusChanged()
   }
 
   private recordError(sessionId: string, root: string, err: unknown): void {
     const message = err instanceof Error ? err.message : String(err)
-    const existing = this.repo.get(sessionId)
+    const existing = this.repo.get(sessionId, root)
     const row: ArchiveMirrorRow = {
       sessionId,
-      destRoot: existing?.destRoot ?? root,
+      destRoot: root,
       syncedBytes: existing?.syncedBytes ?? 0,
       metaSynced: existing?.metaSynced ?? false,
       state: 'error',
@@ -505,6 +528,6 @@ export class MirrorCoordinator implements MirrorControlPort {
       updatedAt: this.now()
     }
     this.repo.upsert(row)
-    this.onStatusChanged()
+    if (this.backfillDepth === 0) this.onStatusChanged()
   }
 }

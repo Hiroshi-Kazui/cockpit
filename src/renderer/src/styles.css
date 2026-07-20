@@ -876,6 +876,11 @@ body {
   margin: 0;
 }
 
+/* M7 followup (UX: 「解除」の D-4 説明) -- a shorter secondary hint shown just under the action buttons. */
+.archive-output-settings__hint--small {
+  margin-top: 4px;
+}
+
 .archive-output-settings__current {
   display: flex;
   gap: 8px;
@@ -968,9 +973,15 @@ body {
   background: #dcdcaa;
 }
 
+/* M7 followup (UX: エラーバッジのコントラスト): the badge's compact 10px text makes borderline contrast
+   ("濃色文字×赤背景") harder to read than the same colors would be at normal text size -- darker
+   background + white text + a subtle border pushes contrast comfortably higher than the original dark-on-
+   var(--error) pairing (text redundancy with the "エラー" label itself is unaffected -- state is never
+   color-only here). */
 .archive-output-settings__badge--error {
-  color: #1e1e1e;
-  background: var(--error);
+  color: #ffffff;
+  background: #b3261e;
+  border: 1px solid #f14c4c;
 }
 
 .archive-output-settings__session-id {

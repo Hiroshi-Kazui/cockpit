@@ -127,13 +127,14 @@ app_settings
   value         TEXT
 
 archive_mirror                     -- アーカイブミラーの同期進捗（§4.4.1。スプールが正、本テーブルは復旧可能な派生状態）
-  session_id     TEXT PRIMARY KEY  -- sessions.id への参照
+  session_id     TEXT              -- sessions.id への参照
   dest_root      TEXT              -- 同期先ルート
   synced_bytes   INTEGER DEFAULT 0 -- transcript.jsonl の同期済みバイト数
   meta_synced    INTEGER DEFAULT 0 -- metadata.json 同期済みフラグ（0/1）
   state          TEXT              -- 'pending' | 'synced' | 'error'
   last_error     TEXT NULL
   updated_at     INTEGER
+  PRIMARY KEY (session_id, dest_root)  -- 出力先ごとに進捗を独立記憶。往復切替で各 root の続きから resume（ADR-0009）
 ```
 
 ## 6. マイルストーン

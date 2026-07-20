@@ -76,6 +76,21 @@ describe('createFsSink (M6, ADR-0008/D-3/D-5)', () => {
     await expect(sink.readTranscriptPrefix('sess-1', 0)).resolves.toEqual(Buffer.alloc(0))
   })
 
+  // M7 followup (bytesRead validation): the original tests above only ever exercised length=4 (out of a
+  // 10-byte file) and length=0 -- both happen to be safely within the file's real size. A mid-length read
+  // (still safe) and a too-long read (unsafe -- must be caught, not silently zero-padded) are added here.
+  it('readTranscriptPrefix reads a mid-length prefix shorter than the full file', async () => {
+    const sink = createFsSink(destRoot)
+    await sink.appendTranscript('sess-1', 0, Buffer.from('abcdefghij')) // 10 bytes
+    await expect(sink.readTranscriptPrefix('sess-1', 7)).resolves.toEqual(Buffer.from('abcdefg'))
+  })
+
+  it('readTranscriptPrefix throws on a short read (requested length exceeds the actual file size)', async () => {
+    const sink = createFsSink(destRoot)
+    await sink.appendTranscript('sess-1', 0, Buffer.from('abcde')) // 5 bytes
+    await expect(sink.readTranscriptPrefix('sess-1', 10)).rejects.toThrow(/short read/)
+  })
+
   it('rejects a session id that would escape the destination root (path traversal defense-in-depth)', async () => {
     const sink = createFsSink(destRoot)
     await expect(sink.appendTranscript('../../evil', 0, Buffer.from('x'))).rejects.toThrow(

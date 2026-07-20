@@ -1,10 +1,11 @@
-// CRUD for the archive_mirror table (spec §5, ADR-0008/D-6). Mirrors the same
-// dependency-inversion pattern as sessionRepo.ts's createSqliteSessionStore: the raw better-sqlite3
-// functions below are adapted to the narrow `ArchiveMirrorRepoPort` port that
-// main/archive/mirror/mirrorCoordinator.ts depends on, so the coordinator's sync/backfill/recovery logic
-// is unit-testable against an in-memory fake (better-sqlite3's native binary cannot load under plain
-// Node/vitest here -- rebuilt for Electron's ABI, see sessionRepo.ts's header comment for the same
-// constraint already documented there).
+// CRUD for the archive_mirror table, keyed by (session_id, dest_root) since ADR-0009 (M7 -- supersedes
+// M6/ADR-0008's session_id-only key; see schema.ts's migrate() for the idempotent startup migration of
+// pre-M7 databases). Mirrors the same dependency-inversion pattern as sessionRepo.ts's
+// createSqliteSessionStore: the raw better-sqlite3 functions below are adapted to the narrow
+// `ArchiveMirrorRepoPort` port that main/archive/mirror/mirrorCoordinator.ts depends on, so the
+// coordinator's sync/backfill/recovery logic is unit-testable against an in-memory fake (better-sqlite3's
+// native binary cannot load under plain Node/vitest here -- rebuilt for Electron's ABI, see
+// sessionRepo.ts's header comment for the same constraint already documented there).
 import type { Database } from 'better-sqlite3'
 import type { MirrorState } from '../../shared/ipc'
 
@@ -19,7 +20,10 @@ export interface ArchiveMirrorRow {
 }
 
 export interface ArchiveMirrorRepoPort {
-  get(sessionId: string): ArchiveMirrorRow | null
+  /** Looks up the row for this exact (session, dest_root) pair -- ADR-0009: each output root a session has
+   * ever been mirrored to keeps its own independent progress row, so this never returns a stale row
+   * belonging to a *different* root the session happens to also be tracked against. */
+  get(sessionId: string, destRoot: string): ArchiveMirrorRow | null
   upsert(row: ArchiveMirrorRow): void
   listAll(): ArchiveMirrorRow[]
   listForDestRoot(destRoot: string): ArchiveMirrorRow[]
@@ -53,9 +57,14 @@ function toRow(raw: RawArchiveMirrorRow): ArchiveMirrorRow {
   }
 }
 
-export function getArchiveMirrorRow(db: Database, sessionId: string): ArchiveMirrorRow | null {
-  const row = db.prepare('SELECT * FROM archive_mirror WHERE session_id = ?').get(sessionId) as
-    RawArchiveMirrorRow | undefined
+export function getArchiveMirrorRow(
+  db: Database,
+  sessionId: string,
+  destRoot: string
+): ArchiveMirrorRow | null {
+  const row = db
+    .prepare('SELECT * FROM archive_mirror WHERE session_id = ? AND dest_root = ?')
+    .get(sessionId, destRoot) as RawArchiveMirrorRow | undefined
   return row ? toRow(row) : null
 }
 
@@ -65,8 +74,7 @@ export function upsertArchiveMirrorRow(db: Database, row: ArchiveMirrorRow): voi
        (session_id, dest_root, synced_bytes, meta_synced, state, last_error, updated_at)
      VALUES
        (@sessionId, @destRoot, @syncedBytes, @metaSynced, @state, @lastError, @updatedAt)
-     ON CONFLICT(session_id) DO UPDATE SET
-       dest_root = excluded.dest_root,
+     ON CONFLICT(session_id, dest_root) DO UPDATE SET
        synced_bytes = excluded.synced_bytes,
        meta_synced = excluded.meta_synced,
        state = excluded.state,
@@ -102,7 +110,7 @@ export function listArchiveMirrorRowsForDestRoot(
  * the narrow `ArchiveMirrorRepoPort` instead of a raw `Database` handle. */
 export function createSqliteArchiveMirrorRepo(db: Database): ArchiveMirrorRepoPort {
   return {
-    get: (sessionId) => getArchiveMirrorRow(db, sessionId),
+    get: (sessionId, destRoot) => getArchiveMirrorRow(db, sessionId, destRoot),
     upsert: (row) => upsertArchiveMirrorRow(db, row),
     listAll: () => listAllArchiveMirrorRows(db),
     listForDestRoot: (destRoot) => listArchiveMirrorRowsForDestRoot(db, destRoot)

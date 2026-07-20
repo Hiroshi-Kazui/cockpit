@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { computeTranscriptMirrorDiff, validateMirrorRoot } from './mirrorPlan'
+import {
+  computeBackfillPlan,
+  computeResumeVerificationRange,
+  computeTranscriptMirrorDiff,
+  isUnrecoverableSyncedBytes,
+  UNRECOVERABLE_SYNCED_BYTES,
+  validateMirrorRoot
+} from './mirrorPlan'
 
 describe('validateMirrorRoot (M6, ADR-0008/D-5 self-mirror prevention)', () => {
   const spoolRoot = 'C:\\Users\\me\\AppData\\Roaming\\cockpit\\archive'
@@ -65,11 +72,12 @@ describe('computeTranscriptMirrorDiff (M6, ADR-0008/D-2/D-6)', () => {
     })
   })
 
-  it('returns error when recorded progress exceeds the spool size (append-only violation guard)', () => {
+  it('returns error (in Japanese, i18n followup) when recorded progress exceeds the spool size (append-only violation guard)', () => {
     const result = computeTranscriptMirrorDiff({ spoolSize: 10, syncedBytes: 20 })
     expect(result.action).toBe('error')
     if (result.action === 'error') {
-      expect(result.reason).toMatch(/exceeds the spool copy/)
+      expect(result.reason).toMatch(/スプール/)
+      expect(result.reason).not.toMatch(/[a-zA-Z]{4,}/) // no stray English prose leaking into the UI
     }
   })
 
@@ -77,5 +85,76 @@ describe('computeTranscriptMirrorDiff (M6, ADR-0008/D-2/D-6)', () => {
     expect(computeTranscriptMirrorDiff({ spoolSize: 0, syncedBytes: 0 })).toEqual({
       action: 'noop'
     })
+  })
+})
+
+describe('UNRECOVERABLE_SYNCED_BYTES / isUnrecoverableSyncedBytes (ADR-0009 sentinel, followups minor)', () => {
+  it('recognizes the sentinel value', () => {
+    expect(isUnrecoverableSyncedBytes(UNRECOVERABLE_SYNCED_BYTES)).toBe(true)
+  })
+
+  it('does not mistake an ordinary large-but-real byte count for the sentinel', () => {
+    expect(isUnrecoverableSyncedBytes(10_000_000_000)).toBe(false)
+    expect(isUnrecoverableSyncedBytes(0)).toBe(false)
+  })
+})
+
+describe('computeResumeVerificationRange (ADR-0009 decision 3: per-root resume content verification)', () => {
+  it('computes the expected spool range for a destination with no skip-gap (gap=0, full mirror)', () => {
+    expect(computeResumeVerificationRange({ destSize: 100, recordedSyncedBytes: 100 })).toEqual({
+      ok: true,
+      offset: 0,
+      length: 100
+    })
+  })
+
+  it('computes the expected spool range for a destination behind a permanent D-4 skip-gap', () => {
+    // recordedSyncedBytes tracks the spool's logical offset (100 skipped + 50 actually copied = 150);
+    // only the trailing 50 bytes were ever physically written to the destination.
+    expect(computeResumeVerificationRange({ destSize: 50, recordedSyncedBytes: 150 })).toEqual({
+      ok: true,
+      offset: 100,
+      length: 50
+    })
+  })
+
+  it('treats a destination with nothing physically written yet as a trivial (zero-length) range', () => {
+    expect(computeResumeVerificationRange({ destSize: 0, recordedSyncedBytes: 100 })).toEqual({
+      ok: true,
+      offset: 100,
+      length: 0
+    })
+  })
+
+  it('refuses when the destination holds more bytes than were ever logically recorded (impossible under normal operation)', () => {
+    const result = computeResumeVerificationRange({ destSize: 200, recordedSyncedBytes: 100 })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toMatch(/宛先/)
+    }
+  })
+})
+
+describe('computeBackfillPlan (ADR-0008/D-4 explicit backfill, followups structure #3)', () => {
+  it('proceeds (rebaselining synced_bytes to the destination size) when the destination is empty', () => {
+    expect(computeBackfillPlan({ destSize: 0, recordedSyncedBytes: 100 })).toEqual({
+      action: 'proceed',
+      rebaselineSyncedBytes: 0
+    })
+  })
+
+  it('proceeds when the destination already holds a value not ahead of the recorded progress (nothing to corrupt)', () => {
+    expect(computeBackfillPlan({ destSize: 50, recordedSyncedBytes: 50 })).toEqual({
+      action: 'proceed',
+      rebaselineSyncedBytes: 50
+    })
+  })
+
+  it('refuses when the destination holds post-skip-suffix content (recorded progress ahead of destination size)', () => {
+    const result = computeBackfillPlan({ destSize: 50, recordedSyncedBytes: 150 })
+    expect(result.action).toBe('refuse')
+    if (result.action === 'refuse') {
+      expect(result.reason).toMatch(/バックフィル/)
+    }
   })
 })

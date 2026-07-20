@@ -7,7 +7,7 @@
 // M3 FIX iteration 2 (minor #5): the gauge fill color now danger-codes remaining quota (via
 // remainingPercentageColor) rather than double-encoding the measured/estimated distinction, which is
 // already carried by the "推定" badge below.
-import { useState } from 'react'
+import { useState, type Ref } from 'react'
 import type {
   MirrorStatusSummary,
   PlanPreset,
@@ -65,6 +65,9 @@ interface StatusBarProps {
    * to report). */
   mirrorStatus: MirrorStatusSummary | null
   onOpenArchiveOutputSettings: () => void
+  /** M7 followup: forwarded down to the mirror indicator button so App.tsx can restore focus to it
+   * specifically when the settings dialog was opened from here (see MirrorIndicator's buttonRef doc). */
+  mirrorIndicatorButtonRef: Ref<HTMLButtonElement>
 }
 
 // M6 usability note (plan.md Phase 3): mirror errors are surfaced here, non-modally, specifically so they
@@ -72,10 +75,15 @@ interface StatusBarProps {
 // but the indicator itself never demands attention the way a modal would.
 function MirrorIndicator({
   mirrorStatus,
-  onOpen
+  onOpen,
+  buttonRef
 }: {
   mirrorStatus: MirrorStatusSummary | null
   onOpen: () => void
+  /** M7 followup (UX: フォーカス復帰先の不一致) -- App.tsx focuses this element back when the dialog it
+   * opens is closed via this indicator (rather than always returning focus to the header button,
+   * regardless of which of the two actually opened it). */
+  buttonRef: Ref<HTMLButtonElement>
 }): React.JSX.Element | null {
   if (!mirrorStatus || mirrorStatus.outputRoot === null) return null
   const errorCount = mirrorStatus.entries.filter((e) => e.state === 'error').length
@@ -90,6 +98,7 @@ function MirrorIndicator({
   return (
     <button
       type="button"
+      ref={buttonRef}
       className={`status-bar__mirror status-bar__mirror--${variant}`}
       onClick={onOpen}
       title={
@@ -109,7 +118,8 @@ export function StatusBar({
   settingsError,
   onSettingsChange,
   mirrorStatus,
-  onOpenArchiveOutputSettings
+  onOpenArchiveOutputSettings,
+  mirrorIndicatorButtonRef
 }: StatusBarProps): React.JSX.Element {
   const estimated = display ? isEstimatedDisplay(display) : false
   // M3 FIX iteration 2 (minor #7): a custom-limit input that fails validation was previously silently
@@ -210,7 +220,11 @@ export function StatusBar({
           設定の保存に失敗しました: {settingsError}
         </span>
       )}
-      <MirrorIndicator mirrorStatus={mirrorStatus} onOpen={onOpenArchiveOutputSettings} />
+      <MirrorIndicator
+        mirrorStatus={mirrorStatus}
+        onOpen={onOpenArchiveOutputSettings}
+        buttonRef={mirrorIndicatorButtonRef}
+      />
     </div>
   )
 }

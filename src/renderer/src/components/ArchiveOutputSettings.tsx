@@ -10,10 +10,13 @@
 // StatusBar.tsx instead (spec §4.4.1 "同期状態の可視化" + usability note: mirror errors must not block
 // claude's dialogue, so they never appear as a blocking dialog by themselves).
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import type { BackfillProgressEvent, MirrorState } from '@shared/ipc'
-import { useMirrorStatus } from '../hooks/useMirrorStatus'
+import type { BackfillProgressEvent, MirrorState, MirrorStatusSummary } from '@shared/ipc'
 
 interface ArchiveOutputSettingsProps {
+  /** M7 followup (structure: useMirrorStatus 二重購読解消) -- App.tsx's single useMirrorStatus()
+   * subscription, passed down rather than this component maintaining its own second one. `null` while not
+   * yet loaded (see useMirrorStatus.ts's doc comment). */
+  mirrorStatus: MirrorStatusSummary | null
   onClose: () => void
 }
 
@@ -36,15 +39,25 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
 }
 
-export function ArchiveOutputSettings({ onClose }: ArchiveOutputSettingsProps): React.JSX.Element {
-  const mirrorStatus = useMirrorStatus()
+export function ArchiveOutputSettings({
+  mirrorStatus,
+  onClose
+}: ArchiveOutputSettingsProps): React.JSX.Element {
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [backfillProgress, setBackfillProgress] = useState<BackfillProgressEvent | null>(null)
+  // M7 followup (UX: バックフィル開始直後の即時フィードバック欠如): true from the moment the button is
+  // clicked until either the first real progress event arrives (main/index.ts's IPC push is asynchronous --
+  // there is an inherent round-trip gap before it lands) or the action settles, so the dialog never shows a
+  // blank gap while a long-running backfill is getting under way.
+  const [backfillStarting, setBackfillStarting] = useState(false)
   const dialogRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    const unsubscribe = window.cockpit.archive.onBackfillProgress(setBackfillProgress)
+    const unsubscribe = window.cockpit.archive.onBackfillProgress((event) => {
+      setBackfillProgress(event)
+      setBackfillStarting(false)
+    })
     return unsubscribe
   }, [])
 
@@ -94,12 +107,14 @@ export function ArchiveOutputSettings({ onClose }: ArchiveOutputSettingsProps): 
     setActionError(null)
     setBusy(true)
     setBackfillProgress(null)
+    setBackfillStarting(true)
     try {
       await window.cockpit.archive.startBackfill()
     } catch (err) {
       setActionError(describeError(err))
     } finally {
       setBusy(false)
+      setBackfillStarting(false)
       restoreFocusIfEscaped()
     }
   }
@@ -183,9 +198,23 @@ export function ArchiveOutputSettings({ onClose }: ArchiveOutputSettingsProps): 
               バックフィルを実行
             </button>
           </div>
+          {/* M7 followup (UX: 「解除」の D-4 説明欠如) -- ADR-0008/D-4: 解除は削除ではない。過去にミラー
+              された宛先ファイルはそのまま残ることを明示し、消えたと誤解されないようにする。 */}
+          <p className="archive-output-settings__hint archive-output-settings__hint--small">
+            「解除」は出力先の設定を消すだけです。これまでにミラーされた過去のデータは出力先に残ります
+            （削除はされません）。
+          </p>
           {actionError && (
             <div className="archive-output-settings__error" role="alert">
               {actionError}
+            </div>
+          )}
+          {/* M7 followup (UX: バックフィル開始直後の即時フィードバック欠如) -- shown from the moment the
+              button is clicked until the first real progress event lands (backfillStarting doc comment
+              above), so there is never a blank gap while a long-running backfill gets under way. */}
+          {backfillStarting && !backfillProgress && (
+            <div className="archive-output-settings__progress" role="status">
+              バックフィルを開始しました…セッション数によっては数分以上かかる場合があります。
             </div>
           )}
           {backfillProgress && (

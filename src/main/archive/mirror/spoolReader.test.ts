@@ -43,6 +43,17 @@ describe('createSpoolReader (M6)', () => {
     expect(buf.length).toBe(0)
   })
 
+  // M7 followup (bytesRead validation): a request whose offset/length window runs past the file's actual
+  // size must be caught (thrown), not silently returned as a zero-padded short buffer -- a short read here
+  // would otherwise make a genuine content mismatch (mirrorCoordinator.ts's rebaselineSession) look like a
+  // false match/mismatch against trailing zero bytes instead of a clear I/O-level signal.
+  it('readSpoolBytes throws on a short read (requested window exceeds the actual file size)', async () => {
+    fs.mkdirSync(path.join(spoolRoot, 'sess-1'))
+    fs.writeFileSync(path.join(spoolRoot, 'sess-1', 'transcript.jsonl'), 'abcde') // 5 bytes
+    const reader = createSpoolReader(spoolRoot)
+    await expect(reader.readSpoolBytes('sess-1', 0, 10)).rejects.toThrow(/short read/)
+  })
+
   it('readSpoolMetadata returns null when metadata.json does not exist yet', async () => {
     const reader = createSpoolReader(spoolRoot)
     await expect(reader.readSpoolMetadata('sess-1')).resolves.toBeNull()

@@ -56,11 +56,111 @@ export function computeTranscriptMirrorDiff({
   syncedBytes: number
 }): MirrorDiffResult {
   if (syncedBytes > spoolSize) {
+    // M7 followup (i18n): this reason string is a user-visible archive_mirror.last_error (surfaced
+    // verbatim in ArchiveOutputSettings.tsx's per-session error list) -- Japanese, not English, to match
+    // the rest of the UI. Also reached (deliberately) when `syncedBytes` is the
+    // UNRECOVERABLE_SYNCED_BYTES sentinel below -- mirrorCoordinator.ts's runOnce/syncTranscript never
+    // actually lets that case reach here anymore (it short-circuits sentinel rows before calling this), so
+    // in practice this branch now only fires for a genuine DB-drift/spool-truncation bug, not the sentinel.
     return {
       action: 'error',
-      reason: `recorded mirror progress (${syncedBytes} bytes) exceeds the spool copy's size (${spoolSize} bytes); refusing to proceed`
+      reason:
+        `記録済みのミラー進捗（${syncedBytes} バイト）がスプールのコピーサイズ（${spoolSize} バイト）を` +
+        '超えています。処理を中止します'
     }
   }
   if (syncedBytes === spoolSize) return { action: 'noop' }
   return { action: 'append', offset: syncedBytes, length: spoolSize - syncedBytes }
+}
+
+/**
+ * Sentinel `archive_mirror.synced_bytes` value recorded for a (session, dest_root) row whose destination
+ * content cannot be safely trusted as a resume point (mirrorCoordinator.ts's rebaselineSession content-
+ * prefix verification failed, or could not be completed) -- ADR-0009 decision 4's "恒久エラー". Centralized
+ * here (followups minor "sentinel 定数の一元化") rather than left as a magic literal at each call site, so
+ * every consumer (mirrorCoordinator.ts's runOnce/rebaselineSession, computeBackfillPlan's callers) checks it
+ * the same way via `isUnrecoverableSyncedBytes` below instead of re-deriving the comparison. Deliberately
+ * far larger than any real transcript could ever grow to, so computeTranscriptMirrorDiff's existing
+ * "recorded progress exceeds spool size" guard would also (redundantly, defense-in-depth) refuse a sync
+ * attempt that somehow reached it without going through the sentinel-aware short-circuit.
+ */
+export const UNRECOVERABLE_SYNCED_BYTES = Number.MAX_SAFE_INTEGER
+
+/** Type guard / named comparison for the sentinel above -- see its doc comment for why this indirection
+ * exists (single point of truth for "is this row permanently blocked", not a `=== Number.MAX_SAFE_INTEGER`
+ * repeated at each call site). */
+export function isUnrecoverableSyncedBytes(syncedBytes: number): boolean {
+  return syncedBytes === UNRECOVERABLE_SYNCED_BYTES
+}
+
+export type ResumeVerificationRange =
+  { ok: true; offset: number; length: number } | { ok: false; reason: string }
+
+/**
+ * ADR-0009 decision 3: before an already-tracked (session, dest_root) row resumes automatic mirroring
+ * (mirrorCoordinator.ts's rebaselineSession, reached whenever setOutputRoot switches back to a root this
+ * session was previously mirrored to), the destination's actual current physical size must be reconciled
+ * against the *logical* spool offset recorded for it (`recordedSyncedBytes`). Per ADR-0008/D-4's
+ * skip-history baseline, `recordedSyncedBytes` is frequently *ahead* of the destination's real physical
+ * size by a permanent gap established the first time this root was ever configured for this session --
+ * only the destination's trailing `destSize` bytes were ever actually written there. This computes which
+ * spool byte range those `destSize` physical bytes are supposed to correspond to
+ * (`[recordedSyncedBytes - destSize, recordedSyncedBytes)`), for the caller to read back and
+ * byte-for-byte compare against the destination's actual content -- catching the destination having been
+ * modified out-of-band (a different sync client, manual edit, etc.) while mirroring was pointed elsewhere.
+ * `destSize` exceeding what was ever logically recorded is itself impossible under normal operation (this
+ * app never grows a destination file beyond what it itself appended) and is treated as a confirmed
+ * inconsistency, not merely "unverified" -- refused without attempting a read.
+ */
+export function computeResumeVerificationRange({
+  destSize,
+  recordedSyncedBytes
+}: {
+  destSize: number
+  recordedSyncedBytes: number
+}): ResumeVerificationRange {
+  if (destSize > recordedSyncedBytes) {
+    return {
+      ok: false,
+      reason:
+        `宛先の実サイズ（${destSize} バイト）が記録済みの進捗（${recordedSyncedBytes} バイト）を超えて` +
+        'います。宛先が外部で変更された可能性があるため、自動同期を中止しました'
+    }
+  }
+  return { ok: true, offset: recordedSyncedBytes - destSize, length: destSize }
+}
+
+export type BackfillPlan =
+  { action: 'proceed'; rebaselineSyncedBytes: number } | { action: 'refuse'; reason: string }
+
+/**
+ * ADR-0008/D-4 "自動実行しない": decides whether an explicit backfill (mirrorCoordinator.ts's
+ * startBackfill) may safely replicate a session's full history to the currently-configured root, extracted
+ * as a pure function (followups structure #3 -- was inlined in startBackfill, now independently
+ * unit-testable). A destination that already holds real bytes *ahead* of what full-history replication
+ * would produce at this point (a post-skip *suffix* left over from an earlier ordinary sync that started
+ * from a skip-rebaselined offset, not from spool byte 0) cannot be backfilled without corrupting it --
+ * rebasing `synced_bytes` down to the destination's real size and resuming an ordinary sync would read the
+ * *wrong* spool range and duplicate/interleave content. Refused outright rather than silently attempting it
+ * (append-only violation must never be papered over, spec §4.4). Otherwise, `synced_bytes` is rebaselined
+ * down to the destination's real current size so the ordinary sync pass that follows copies everything
+ * from there (or the entire spool from scratch, for a still-empty destination).
+ */
+export function computeBackfillPlan({
+  destSize,
+  recordedSyncedBytes
+}: {
+  destSize: number
+  recordedSyncedBytes: number
+}): BackfillPlan {
+  if (destSize > 0 && recordedSyncedBytes > destSize) {
+    return {
+      action: 'refuse',
+      reason:
+        `バックフィルできません: 宛先には既に ${destSize} バイトのデータがありますが、スプールの完全な` +
+        '先頭一致ではありません（この出力先に対しては以前に履歴がスキップされています）。バックフィルを' +
+        '行うと既存のミラー内容を破壊するおそれがあるため中止しました'
+    }
+  }
+  return { action: 'proceed', rebaselineSyncedBytes: destSize }
 }

@@ -1,7 +1,7 @@
 ---
 milestone: M7
 title: ミラーの hardening — M6 残課題の一括解消（per-root 進捗化含む）
-status: draft   # draft → approved（/cockpit-build 起動 = 承認イベント）→ shipped（品質ゲート合格）
+status: shipped   # draft → approved（/cockpit-build 起動 = 承認イベント）→ shipped（品質ゲート合格）
 created: 2026-07-21
 decisions: docs/adr/0009-per-root-mirror-progress.md
 ---

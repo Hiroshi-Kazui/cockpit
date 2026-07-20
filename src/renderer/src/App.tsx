@@ -55,13 +55,32 @@ export function App(): React.JSX.Element {
     archiveButtonRef.current?.focus()
   }, [])
   // M6 (spec §4.4.1): same overlay-sibling-of-PaneGrid / focus-restore-to-opener convention as
-  // showSessionBrowser above.
+  // showSessionBrowser above. M7 followup (UX: フォーカス復帰先の不一致): this dialog can be opened from
+  // *either* the header button or StatusBar's mirror indicator -- `archiveOutputSettingsOpener` records
+  // which one, so closing restores focus to whichever element actually opened it, not always the header
+  // button.
   const [showArchiveOutputSettings, setShowArchiveOutputSettings] = useState(false)
+  const [archiveOutputSettingsOpener, setArchiveOutputSettingsOpener] = useState<
+    'header' | 'statusBar'
+  >('header')
   const archiveOutputSettingsButtonRef = useRef<HTMLButtonElement | null>(null)
+  const mirrorIndicatorButtonRef = useRef<HTMLButtonElement | null>(null)
+  const openArchiveOutputSettingsFromHeader = useCallback((): void => {
+    setArchiveOutputSettingsOpener('header')
+    setShowArchiveOutputSettings(true)
+  }, [])
+  const openArchiveOutputSettingsFromStatusBar = useCallback((): void => {
+    setArchiveOutputSettingsOpener('statusBar')
+    setShowArchiveOutputSettings(true)
+  }, [])
   const closeArchiveOutputSettings = useCallback((): void => {
     setShowArchiveOutputSettings(false)
-    archiveOutputSettingsButtonRef.current?.focus()
-  }, [])
+    if (archiveOutputSettingsOpener === 'statusBar') {
+      mirrorIndicatorButtonRef.current?.focus()
+    } else {
+      archiveOutputSettingsButtonRef.current?.focus()
+    }
+  }, [archiveOutputSettingsOpener])
   const rateLimitsDisplay = useRateLimitsDisplay()
   const usageSettings = useUsageSettings()
   const mirrorStatus = useMirrorStatus()
@@ -148,7 +167,7 @@ export function App(): React.JSX.Element {
           type="button"
           ref={archiveOutputSettingsButtonRef}
           className="app-header__archive-button"
-          onClick={() => setShowArchiveOutputSettings(true)}
+          onClick={openArchiveOutputSettingsFromHeader}
         >
           アーカイブ出力先
         </button>
@@ -178,12 +197,18 @@ export function App(): React.JSX.Element {
         settingsError={usageSettings.error}
         onSettingsChange={(next) => void usageSettings.update(next)}
         mirrorStatus={mirrorStatus}
-        onOpenArchiveOutputSettings={() => setShowArchiveOutputSettings(true)}
+        onOpenArchiveOutputSettings={openArchiveOutputSettingsFromStatusBar}
+        mirrorIndicatorButtonRef={mirrorIndicatorButtonRef}
       />
       {/* M5: sibling of PaneGrid, not nested inside it -- see showSessionBrowser's doc comment above. */}
       {showSessionBrowser && <SessionBrowser onClose={closeSessionBrowser} />}
-      {/* M6: same sibling-of-PaneGrid convention -- see showArchiveOutputSettings's doc comment above. */}
-      {showArchiveOutputSettings && <ArchiveOutputSettings onClose={closeArchiveOutputSettings} />}
+      {/* M6: same sibling-of-PaneGrid convention -- see showArchiveOutputSettings's doc comment above.
+          M7 followup (structure: useMirrorStatus 二重購読): mirrorStatus is App's single subscription
+          (useMirrorStatus above), passed down as a prop rather than ArchiveOutputSettings subscribing to
+          its own second copy. */}
+      {showArchiveOutputSettings && (
+        <ArchiveOutputSettings mirrorStatus={mirrorStatus} onClose={closeArchiveOutputSettings} />
+      )}
     </div>
   )
 }

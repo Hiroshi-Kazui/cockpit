@@ -50,10 +50,19 @@ export function createSpoolReader(spoolRoot: string): SpoolReader {
         throw new Error(`invalid session id for spool read: ${sessionId}`)
       }
       if (length === 0) return Buffer.alloc(0)
-      const handle = await fs.promises.open(path.join(dir, 'transcript.jsonl'), 'r')
+      const file = path.join(dir, 'transcript.jsonl')
+      const handle = await fs.promises.open(file, 'r')
       try {
         const buffer = Buffer.alloc(length)
-        await handle.read(buffer, 0, length, offset)
+        // M7 followup (bytesRead validation) -- see fsSink.ts's readTranscriptPrefix for why a short read
+        // must be a thrown error, not a silently zero-padded buffer.
+        const { bytesRead } = await handle.read(buffer, 0, length, offset)
+        if (bytesRead !== length) {
+          throw new Error(
+            `short read from spool transcript for session ${sessionId} at ${file}: expected ${length} ` +
+              `byte(s) at offset ${offset}, got ${bytesRead} (the spool may have changed concurrently)`
+          )
+        }
         return buffer
       } finally {
         await handle.close()

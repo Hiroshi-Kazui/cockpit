@@ -1,5 +1,9 @@
 # M6 残課題（followups）
 
+> **✅ 全14件 M7 で解消済み（2026-07-21）**。`milestones/M7-mirror-hardening/` として起案・出荷。
+> requirements-reviewer が M6 followups 14件と M7 acceptance の一対一解消を確認済み。
+> 本ファイルは履歴として残す（新規の残課題は `milestones/M7-mirror-hardening/followups.md`）。
+
 ビルドループ終了時（2026-07-21、合格）に残った non_blocking。次回 `/cockpit-plan` が起案時に参照する。
 すべて blocking ではない（合格を妨げない）。severity 順。
 

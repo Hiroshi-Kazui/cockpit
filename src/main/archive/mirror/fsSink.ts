@@ -81,12 +81,49 @@ export function createFsSink(destRoot: string): ArchiveSink {
       const handle = await fs.promises.open(file, 'r')
       try {
         const buffer = Buffer.alloc(length)
-        await handle.read(buffer, 0, length, 0)
+        // M7 followup (bytesRead validation): fs.read()'s `bytesRead` is not guaranteed to equal the
+        // requested `length` (e.g. the file is shorter than expected -- concurrent modification, or a
+        // caller miscalculating the requested window). Node.js does NOT zero-fill or reject a short read on
+        // its own -- silently returning a partially-filled buffer would make mirrorCoordinator.ts's
+        // rebaselineSession content-prefix comparison compare against trailing zero bytes that were never
+        // actually read, which could produce a false match/mismatch instead of a clear I/O-level signal.
+        const { bytesRead } = await handle.read(buffer, 0, length, 0)
+        if (bytesRead !== length) {
+          throw new Error(
+            `short read at ${file}: expected ${length} byte(s), got ${bytesRead} ` +
+              '(the destination may have changed concurrently)'
+          )
+        }
         return buffer
       } finally {
         await handle.close()
       }
     }
+  }
+}
+
+/** M7 followup (i18n): translates a raw Node.js fs errno (EACCES, ENOSPC, ...) into a Japanese lead
+ * sentence for probeWritable's user-facing `reason` below -- the UI is otherwise entirely Japanese, so a
+ * bare English/errno string here ("EACCES: permission denied, mkdir '...'") reads as broken/untranslated.
+ * The original message is still appended in parentheses (not dropped) for anyone who needs the concrete
+ * diagnostic detail (support, bug reports). */
+function describeProbeErrno(err: unknown): string {
+  const code =
+    typeof err === 'object' && err !== null ? (err as NodeJS.ErrnoException).code : undefined
+  switch (code) {
+    case 'EACCES':
+    case 'EPERM':
+      return 'アクセス権限がありません'
+    case 'ENOENT':
+      return '指定されたパスが見つかりません'
+    case 'ENOTDIR':
+      return '指定されたパスはフォルダではありません'
+    case 'ENOSPC':
+      return '空き容量が不足しています'
+    case 'EROFS':
+      return '読み取り専用のため書き込めません'
+    default:
+      return '書き込みに失敗しました'
   }
 }
 
@@ -104,6 +141,7 @@ export async function probeWritable(
     await fs.promises.unlink(probePath)
     return { ok: true }
   } catch (err) {
-    return { ok: false, reason: err instanceof Error ? err.message : String(err) }
+    const detail = err instanceof Error ? err.message : String(err)
+    return { ok: false, reason: `出力先に書き込めません: ${describeProbeErrno(err)}（${detail}）` }
   }
 }
