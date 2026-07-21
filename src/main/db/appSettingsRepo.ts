@@ -2,10 +2,12 @@
 // M6 for the archive-output mirror destination (spec §4.4.1, ADR-0008/D-6).
 import type { Database } from 'better-sqlite3'
 import type { AppSettings } from '../../shared/ipc'
+import { isLayoutMode, type LayoutMode } from '../../shared/layout'
 
 export const APP_SETTING_KEYS = {
   claudePath: 'claude_path',
-  archiveOutputRoot: 'archive_output_root'
+  archiveOutputRoot: 'archive_output_root',
+  layoutMode: 'layout_mode'
 } as const
 
 interface AppSettingRow {
@@ -25,11 +27,25 @@ function setRaw(db: Database, key: string, value: string): void {
   ).run({ key, value })
 }
 
+/** Defaults to 'single' when unset or the stored value is unrecognized (e.g. hand-edited DB / schema
+ * drift) -- same tolerant-parse philosophy as usageSettingsRepo: never surface a corrupt value as a
+ * "valid" layout, fall back to the safe default instead. */
+function getLayoutMode(db: Database): LayoutMode {
+  const raw = getRaw(db, APP_SETTING_KEYS.layoutMode)
+  return raw !== null && isLayoutMode(raw) ? raw : 'single'
+}
+
 export function getAppSettings(db: Database): AppSettings {
   return {
     claudePath: getRaw(db, APP_SETTING_KEYS.claudePath),
-    archiveOutputRoot: getRaw(db, APP_SETTING_KEYS.archiveOutputRoot)
+    archiveOutputRoot: getRaw(db, APP_SETTING_KEYS.archiveOutputRoot),
+    layoutMode: getLayoutMode(db)
   }
+}
+
+/** Persists the pane split layout so the next launch reopens with it (spec §4.1). */
+export function setLayoutMode(db: Database, mode: LayoutMode): void {
+  setRaw(db, APP_SETTING_KEYS.layoutMode, mode)
 }
 
 export function setClaudePath(db: Database, claudePath: string): void {

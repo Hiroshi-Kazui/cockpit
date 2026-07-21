@@ -343,3 +343,27 @@ describe('archiveOutputRootSet / archiveMirrorStatusGet / archiveBackfillStart',
     expect(mirrorControl.startBackfill).toHaveBeenCalledWith(expect.any(Function))
   })
 })
+
+// Split-layout persistence: the layout the user picks is stored so the window reopens with it (spec §4.1).
+describe('appSettingsSetLayoutMode', () => {
+  beforeEach(() => {
+    unregisterIpcHandlers()
+    registeredHandlers.clear()
+  })
+
+  it('persists a valid layout mode without throwing', () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.appSettingsSetLayoutMode)
+    expect(handler).toBeDefined()
+
+    expect(() => handler?.(undefined, { layoutMode: 'split4' })).not.toThrow()
+  })
+
+  it('rejects an unrecognized layout mode rather than persisting garbage', () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.appSettingsSetLayoutMode)
+
+    expect(() => handler?.(undefined, { layoutMode: 'split3' })).toThrow(/invalid layout mode/)
+    expect(() => handler?.(undefined, { layoutMode: '' })).toThrow(/invalid layout mode/)
+  })
+})

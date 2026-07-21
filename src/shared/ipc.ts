@@ -1,5 +1,6 @@
 // Type-safe IPC contract shared by main, preload, and renderer processes (TD-6: cockpit:<domain>:<verb>).
 import type { JsonlDisplayTurn } from './jsonl'
+import type { LayoutMode } from './layout'
 
 /** Valid pane slot indices for the 4-pane grid (spec §4.1). */
 export type PaneIndex = 0 | 1 | 2 | 3
@@ -36,6 +37,7 @@ export const IpcChannels = {
   paneSettingsChooseFolder: 'cockpit:paneSettings:chooseFolder',
   appSettingsGet: 'cockpit:appSettings:get',
   appSettingsSetClaudePath: 'cockpit:appSettings:setClaudePath',
+  appSettingsSetLayoutMode: 'cockpit:appSettings:setLayoutMode',
   claudeResolveStatus: 'cockpit:claude:resolveStatus',
   sessionUpdated: 'cockpit:session:updated',
   sessionArchiveError: 'cockpit:session:archiveError',
@@ -119,10 +121,17 @@ export interface AppSettings {
    * mirroring is not configured -- in which case behavior is byte-for-byte identical to M5 (no mirror
    * engine runs at all, main/index.ts). */
   archiveOutputRoot: string | null
+  /** Persisted pane split layout (spec §4.1), restored on next launch so the window reopens with the
+   * split the user last left it in. Defaults to 'single' when never set / stored value is unrecognized. */
+  layoutMode: LayoutMode
 }
 
 export interface SetClaudePathRequest {
   claudePath: string
+}
+
+export interface SetLayoutModeRequest {
+  layoutMode: LayoutMode
 }
 
 // ---- claude resolution status (AC #9: user-visible error, no silent failure) ----

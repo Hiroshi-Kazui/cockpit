@@ -13,6 +13,7 @@ import {
   type ChooseFolderResult,
   type AppSettings,
   type SetClaudePathRequest,
+  type SetLayoutModeRequest,
   type ClaudeResolveStatus,
   type PurposeSummary,
   type PlanPreset,
@@ -37,7 +38,13 @@ import { PtyManager } from '../pty/ptyManager'
 import { resolveClaude, ClaudeResolutionError } from '../pty/resolveClaude'
 import type { PurposeCoordinator } from '../pty/purposeCoordinator'
 import { getAllPaneSettings, setPaneCwd } from '../db/paneSettingsRepo'
-import { getAppSettings, setClaudePath, setArchiveOutputRoot } from '../db/appSettingsRepo'
+import {
+  getAppSettings,
+  setClaudePath,
+  setArchiveOutputRoot,
+  setLayoutMode
+} from '../db/appSettingsRepo'
+import { isLayoutMode } from '../../shared/layout'
 import { getAllActivePurposes } from '../db/purposeRepo'
 import { getUsageSettings, setUsageSettings } from '../db/usageSettingsRepo'
 import type { UsageCoordinator } from '../telemetry/usageCoordinator'
@@ -184,6 +191,16 @@ export function registerIpcHandlers(
     (_event, req: SetClaudePathRequest): void => {
       assertNonEmptyString(req.claudePath, 'claudePath')
       setClaudePath(db, req.claudePath)
+    }
+  )
+
+  ipcMain.handle(
+    IpcChannels.appSettingsSetLayoutMode,
+    (_event, req: SetLayoutModeRequest): void => {
+      if (!isLayoutMode(req.layoutMode)) {
+        throw new Error(`invalid layout mode: ${String(req.layoutMode)}`)
+      }
+      setLayoutMode(db, req.layoutMode)
     }
   )
 

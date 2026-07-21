@@ -13,6 +13,7 @@ import {
   type ChooseFolderResult,
   type AppSettings,
   type SetClaudePathRequest,
+  type SetLayoutModeRequest,
   type ClaudeResolveStatus,
   type SessionSummary,
   type SessionArchiveErrorEvent,
@@ -55,6 +56,7 @@ export interface CockpitApi {
   appSettings: {
     get: () => Promise<AppSettings>
     setClaudePath: (req: SetClaudePathRequest) => Promise<void>
+    setLayoutMode: (req: SetLayoutModeRequest) => Promise<void>
   }
   claude: {
     resolveStatus: () => Promise<ClaudeResolveStatus>
@@ -119,7 +121,8 @@ const api: CockpitApi = {
   },
   appSettings: {
     get: () => ipcRenderer.invoke(IpcChannels.appSettingsGet),
-    setClaudePath: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetClaudePath, req)
+    setClaudePath: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetClaudePath, req),
+    setLayoutMode: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetLayoutMode, req)
   },
   claude: {
     resolveStatus: () => ipcRenderer.invoke(IpcChannels.claudeResolveStatus)

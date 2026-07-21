@@ -99,10 +99,23 @@ export function App(): React.JSX.Element {
   }, [])
   const getPaneFocus = useCallback((pane: PaneIndex) => focusFnsRef.current[pane], [])
 
+  // Switch the visible split and persist it so the next launch reopens with the same layout.
+  const handleLayoutChange = useCallback((mode: LayoutMode): void => {
+    setLayout(mode)
+    window.cockpit.appSettings
+      .setLayoutMode({ layoutMode: mode })
+      .catch((err: unknown) => setLoadError(describeError(err)))
+  }, [])
+
   useEffect(() => {
     window.cockpit.paneSettings
       .getAll()
       .then(setPaneSettings)
+      .catch((err: unknown) => setLoadError(describeError(err)))
+    // Restore the split layout the user last left the window in (persisted in app_settings).
+    window.cockpit.appSettings
+      .get()
+      .then((settings) => setLayout(settings.layoutMode))
       .catch((err: unknown) => setLoadError(describeError(err)))
     window.cockpit.claude
       .resolveStatus()
@@ -154,7 +167,7 @@ export function App(): React.JSX.Element {
     <div className="app">
       <header className="app-header">
         <h1>cockpit</h1>
-        <LayoutSwitcher value={layout} onChange={setLayout} />
+        <LayoutSwitcher value={layout} onChange={handleLayoutChange} />
         <button
           type="button"
           ref={archiveButtonRef}
