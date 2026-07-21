@@ -1,6 +1,11 @@
 // Unit tests for the pure classification/spawn-command logic of TD-5 (no PATH lookups; those are side-effecting).
 import { describe, expect, it } from 'vitest'
-import { buildSpawnCommand, classifyClaudePath, ClaudeResolutionError } from './resolveClaude'
+import {
+  buildSpawnCommand,
+  classifyClaudePath,
+  ClaudeResolutionError,
+  selectClaudeCandidate
+} from './resolveClaude'
 
 describe('classifyClaudePath', () => {
   it('classifies .exe as exe (direct spawn)', () => {
@@ -21,6 +26,44 @@ describe('classifyClaudePath', () => {
 
   it('throws ClaudeResolutionError for unsupported extensions', () => {
     expect(() => classifyClaudePath('C:\\tools\\claude.sh')).toThrow(ClaudeResolutionError)
+  })
+})
+
+describe('selectClaudeCandidate', () => {
+  it("prefers the .cmd shim over npm's extensionless launcher (the reported bug)", () => {
+    // `where claude` lists the extensionless POSIX launcher first, then the .cmd shim.
+    const lines = [
+      'C:\\Users\\me\\AppData\\Roaming\\npm\\claude',
+      'C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd'
+    ]
+    expect(selectClaudeCandidate(lines)).toBe('C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd')
+  })
+
+  it('prefers .exe over .cmd when both are present', () => {
+    const lines = ['C:\\npm\\claude.cmd', 'C:\\tools\\claude.exe']
+    expect(selectClaudeCandidate(lines)).toBe('C:\\tools\\claude.exe')
+  })
+
+  it('accepts a .bat shim when no .exe/.cmd exists', () => {
+    expect(selectClaudeCandidate(['C:\\tools\\claude', 'C:\\tools\\claude.bat'])).toBe(
+      'C:\\tools\\claude.bat'
+    )
+  })
+
+  it('trims whitespace and ignores blank lines', () => {
+    expect(selectClaudeCandidate(['', '  C:\\tools\\claude.exe  ', ''])).toBe(
+      'C:\\tools\\claude.exe'
+    )
+  })
+
+  it('falls back to the first line when nothing has a supported extension', () => {
+    // Downstream disk probing / a precise error handles this case.
+    expect(selectClaudeCandidate(['C:\\npm\\claude'])).toBe('C:\\npm\\claude')
+  })
+
+  it('returns null for an empty result', () => {
+    expect(selectClaudeCandidate([])).toBeNull()
+    expect(selectClaudeCandidate(['', '   '])).toBeNull()
   })
 })
 
