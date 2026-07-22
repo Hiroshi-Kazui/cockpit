@@ -1,5 +1,6 @@
 // Owns node-pty process lifecycle per pane. The only module allowed to touch node-pty directly
 // (CLAUDE.md: 副作用の集約). Raw data passthrough only — no interpretation of pty output (spec §4.1).
+import * as fs from 'node:fs'
 import * as pty from 'node-pty'
 import type { IPty } from 'node-pty'
 import type { PaneIndex } from '../../shared/ipc'
@@ -29,6 +30,21 @@ function cleanEnv(env: Record<string, string | undefined>): Record<string, strin
     if (value !== undefined) result[key] = value
   }
   return result
+}
+
+/** Netskope (and similar corporate TLS agents) can leave NODE_EXTRA_CA_CERTS pointing at a cert file
+ * that no longer exists on disk. node-pty's child claude, being a Node process, then prints a noisy
+ * "Warning: Ignoring extra certs from `...`, load failed: No such file or directory" line into the
+ * pane on every launch. Node ignores the missing file regardless (it is a warning, not a failure), so
+ * removing the variable when its target is absent changes nothing operationally -- it only suppresses
+ * the misleading warning. A present, valid path is left untouched (some corporate networks genuinely
+ * need the extra CA cert for TLS interception). */
+function stripMissingExtraCaCerts(env: Record<string, string>): Record<string, string> {
+  const certPath = env.NODE_EXTRA_CA_CERTS
+  if (certPath === undefined || fs.existsSync(certPath)) return env
+  const sanitized = { ...env }
+  delete sanitized.NODE_EXTRA_CA_CERTS
+  return sanitized
 }
 
 export class PtyManager {
@@ -75,7 +91,7 @@ export class PtyManager {
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       cwd,
-      env: cleanEnv({ ...process.env, ...telemetry.extraEnv })
+      env: stripMissingExtraCaCerts(cleanEnv({ ...process.env, ...telemetry.extraEnv }))
     })
     proc.onData((data) => {
       // A pane with no `generations` entry (explicit kill(), never respawned) is not superseded --

@@ -3,6 +3,7 @@
 // *new* instance's state -- which would otherwise let a stale exit event wrongly dispose a freshly
 // armed PurposeCoordinator launch watcher (main/index.ts wires PtyManager's onExit -> cancelLaunch).
 // node-pty and resolveClaude are mocked so no real process/PATH lookup is involved.
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import * as nodePty from 'node-pty'
 import { PtyManager, type PtyManagerDeps } from './ptyManager'
@@ -210,6 +211,43 @@ describe('PtyManager respawn generation guard', () => {
         ])
       )
       expect(onExitEvents).toHaveLength(2)
+    })
+  })
+
+  // Netskope (and similar corporate TLS agents) can leave NODE_EXTRA_CA_CERTS pointing at a cert file
+  // that no longer exists, making the child claude print a noisy "Ignoring extra certs ... No such
+  // file or directory" warning into the pane on every launch. spawn() must drop that stale variable
+  // (Node ignores the missing file anyway) while leaving a genuinely valid path untouched.
+  describe('NODE_EXTRA_CA_CERTS sanitization (stale-cert warning suppression)', () => {
+    function spawnEnv(): Record<string, string> {
+      const call = vi.mocked(nodePty).spawn.mock.calls[0]
+      return (call[2]?.env ?? {}) as Record<string, string>
+    }
+
+    function withExtraCaCerts(value: string, run: () => void): void {
+      const original = process.env.NODE_EXTRA_CA_CERTS
+      process.env.NODE_EXTRA_CA_CERTS = value
+      try {
+        run()
+      } finally {
+        if (original === undefined) delete process.env.NODE_EXTRA_CA_CERTS
+        else process.env.NODE_EXTRA_CA_CERTS = original
+      }
+    }
+
+    it('drops NODE_EXTRA_CA_CERTS from the spawn env when the file does not exist', () => {
+      withExtraCaCerts('C:\\does\\not\\exist\\nscacert.pem', () => {
+        manager.spawn(0, 'C:\\repo')
+        expect(spawnEnv().NODE_EXTRA_CA_CERTS).toBeUndefined()
+      })
+    })
+
+    it('keeps NODE_EXTRA_CA_CERTS when it points at an existing file', () => {
+      const existingFile = fileURLToPath(import.meta.url) // this test file itself surely exists
+      withExtraCaCerts(existingFile, () => {
+        manager.spawn(0, 'C:\\repo')
+        expect(spawnEnv().NODE_EXTRA_CA_CERTS).toBe(existingFile)
+      })
     })
   })
 })
