@@ -13,3 +13,4 @@ blob-report/
 # Local tooling / exploration artifacts (not project source)
 .playwright-mcp/
 /scene*.png
+CLAUDE_TOKEN.txt
