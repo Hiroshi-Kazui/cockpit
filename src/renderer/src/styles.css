@@ -996,3 +996,315 @@ body {
   color: var(--error);
   flex-basis: 100%;
 }
+
+/* ---- M9: purpose-completion evaluation (spec §2/§4.6, ADR-0010) ---- */
+
+/* .evaluation-dialog is mounted inside a `.pane` (position:relative), reusing the shared
+   .dialog-backdrop's position:absolute;inset:0 -- same convention as .dialog (PurposeDialog.tsx). */
+.evaluation-dialog {
+  width: min(480px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.evaluation-dialog__header,
+.evaluation-dashboard__header,
+.evaluation-settings__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #2d2d30;
+}
+
+.evaluation-dialog__header h3,
+.evaluation-dashboard__header h3,
+.evaluation-settings__header h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.evaluation-dialog__header button,
+.evaluation-dashboard__header button,
+.evaluation-settings__header button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 2px 8px;
+}
+
+.evaluation-dialog__body,
+.evaluation-dashboard__body,
+.evaluation-settings__body {
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.evaluation-dialog__chart {
+  display: flex;
+  justify-content: center;
+}
+
+.evaluation-dialog__raw-scores {
+  font-size: 11px;
+  color: #b8b8b8;
+  margin: 0;
+}
+
+.evaluation-dialog__summary h4,
+.evaluation-dialog__suggestions h4 {
+  margin: 4px 0;
+  font-size: 12px;
+  color: #b8b8b8;
+}
+
+.evaluation-dialog__suggestions ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.evaluation-dialog__suggestion-badge {
+  display: inline-block;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  margin-right: 6px;
+}
+
+.evaluation-dialog__suggestion-badge--user {
+  color: #1e1e1e;
+  background: #4ec9b0;
+}
+
+.evaluation-dialog__suggestion-badge--environment {
+  color: #1e1e1e;
+  background: #dcdcaa;
+}
+
+.evaluation-dialog__status,
+.evaluation-dialog__hint,
+.evaluation-dashboard__hint {
+  color: #9d9d9d;
+}
+
+.evaluation-dialog__error,
+.evaluation-dashboard__error,
+.evaluation-settings__error {
+  color: var(--error);
+  font-size: 12px;
+}
+
+.evaluation-dialog__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.evaluation-dialog__actions button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.evaluation-dialog__disclaimer,
+.evaluation-dashboard__disclaimer {
+  font-size: 10.5px;
+  color: #9d9d9d;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  margin: 0;
+}
+
+/* radar/line chart primitives, shared by RadarChart.tsx and EvaluationLineChart.tsx (D-7: hand-rolled
+   SVG, no chart-library dependency). */
+.radar-chart__grid {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.radar-chart__spoke {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.radar-chart__area {
+  fill: rgba(78, 201, 176, 0.35);
+  stroke: #4ec9b0;
+  stroke-width: 2;
+}
+
+.radar-chart__label {
+  fill: #b8b8b8;
+  font-size: 10px;
+}
+
+.evaluation-line-chart__gridline {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.evaluation-line-chart__line {
+  stroke-width: 2;
+  fill: none;
+}
+
+.evaluation-line-chart__x-label {
+  fill: #9d9d9d;
+  font-size: 9.5px;
+}
+
+.evaluation-line-chart__empty {
+  fill: #9d9d9d;
+  font-size: 11px;
+}
+
+.evaluation-dashboard-backdrop,
+.evaluation-settings-backdrop {
+  position: fixed;
+  z-index: 20;
+}
+
+.evaluation-dashboard {
+  width: min(680px, calc(100% - 48px));
+  max-height: min(680px, calc(100% - 48px));
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.evaluation-dashboard__granularity {
+  display: flex;
+  gap: 6px;
+}
+
+.evaluation-dashboard__granularity button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.evaluation-dashboard__granularity button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.evaluation-dashboard__legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: #b8b8b8;
+}
+
+.evaluation-dashboard__legend li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.evaluation-dashboard__legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.evaluation-settings {
+  width: min(480px, calc(100% - 48px));
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.evaluation-settings__row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #b8b8b8;
+}
+
+.evaluation-settings__row input[type='checkbox'] {
+  margin-right: 6px;
+}
+
+.evaluation-settings__row input:not([type='checkbox']) {
+  background: black;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.evaluation-settings__current {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.evaluation-settings__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.evaluation-settings__actions button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.evaluation-settings__actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.evaluation-settings__hint {
+  font-size: 11px;
+  color: #9d9d9d;
+  margin: 0;
+}

@@ -10,6 +10,8 @@ import {
 } from '@shared/ipc'
 import { visiblePanesForLayout, type LayoutMode } from '@shared/layout'
 import { ArchiveOutputSettings } from './components/ArchiveOutputSettings'
+import { EvaluationDashboard } from './components/EvaluationDashboard'
+import { EvaluationSettings } from './components/EvaluationSettings'
 import { LayoutSwitcher } from './components/LayoutSwitcher'
 import { PaneGrid } from './components/PaneGrid'
 import { SessionBrowser } from './components/SessionBrowser'
@@ -81,6 +83,21 @@ export function App(): React.JSX.Element {
       archiveOutputSettingsButtonRef.current?.focus()
     }
   }, [archiveOutputSettingsOpener])
+  // M9 (ADR-0010): same overlay-sibling-of-PaneGrid convention as showSessionBrowser/
+  // showArchiveOutputSettings above.
+  const [showEvaluationDashboard, setShowEvaluationDashboard] = useState(false)
+  const [showEvaluationSettings, setShowEvaluationSettings] = useState(false)
+  const evaluationDashboardButtonRef = useRef<HTMLButtonElement | null>(null)
+  const evaluationSettingsButtonRef = useRef<HTMLButtonElement | null>(null)
+  const closeEvaluationDashboard = useCallback((): void => {
+    setShowEvaluationDashboard(false)
+    evaluationDashboardButtonRef.current?.focus()
+  }, [])
+  const closeEvaluationSettings = useCallback((): void => {
+    setShowEvaluationSettings(false)
+    evaluationSettingsButtonRef.current?.focus()
+  }, [])
+
   const rateLimitsDisplay = useRateLimitsDisplay()
   const usageSettings = useUsageSettings()
   const mirrorStatus = useMirrorStatus()
@@ -98,6 +115,27 @@ export function App(): React.JSX.Element {
     }
   }, [])
   const getPaneFocus = useCallback((pane: PaneIndex) => focusFnsRef.current[pane], [])
+
+  // M9 FIX (iter1 major): unlike focusFnsRef above (read on-demand only, never needs a re-render), this
+  // must be React state -- it feeds usePaneFocusShortcuts' `enabled` argument below, which the hook
+  // re-subscribes its keydown listener on (see its own dependency array), so App needs to actually
+  // re-render when a pane-local EvaluationDialog opens/closes for the shortcut to be disabled in time.
+  const [evaluationDialogOpenPanes, setEvaluationDialogOpenPanes] = useState<ReadonlySet<PaneIndex>>(
+    () => new Set()
+  )
+  const handleEvaluationDialogVisibilityChange = useCallback(
+    (pane: PaneIndex, visible: boolean): void => {
+      setEvaluationDialogOpenPanes((prev) => {
+        const alreadyMatches = visible ? prev.has(pane) : !prev.has(pane)
+        if (alreadyMatches) return prev // avoid a no-op re-render on every unrelated update
+        const next = new Set(prev)
+        if (visible) next.add(pane)
+        else next.delete(pane)
+        return next
+      })
+    },
+    []
+  )
 
   // Switch the visible split and persist it so the next launch reopens with the same layout.
   const handleLayoutChange = useCallback((mode: LayoutMode): void => {
@@ -154,13 +192,19 @@ export function App(): React.JSX.Element {
   // window keydown listener on every unrelated App re-render -- only when `layout` actually changes.
   const visiblePanes = useMemo(() => new Set(visiblePanesForLayout(layout)), [layout])
 
-  // M5/M6: disabled while any `aria-modal="true"` overlay is open (read-only session browser, or the M6
-  // archive-output settings dialog) -- see usePaneFocusShortcuts' `enabled` doc comment -- so a global
-  // Ctrl+1..4 focus jump can't bypass the modal and land keystrokes on a live pty behind it.
+  // M5/M6/M9: disabled while any `aria-modal="true"` overlay is open (read-only session browser, the M6
+  // archive-output settings dialog, the M9 evaluation dashboard/settings dialogs, or -- M9 FIX (iter1
+  // major) -- a pane-local EvaluationDialog opened from any of the 4 panes via Pane.tsx's "完了"/"評価を
+  // 見る") -- see usePaneFocusShortcuts' `enabled` doc comment -- so a global Ctrl+1..4 focus jump can't
+  // bypass the modal and land keystrokes on a live pty behind it.
   usePaneFocusShortcuts(
     visiblePanes,
     getPaneFocus,
-    !showSessionBrowser && !showArchiveOutputSettings
+    !showSessionBrowser &&
+      !showArchiveOutputSettings &&
+      !showEvaluationDashboard &&
+      !showEvaluationSettings &&
+      evaluationDialogOpenPanes.size === 0
   )
 
   return (
@@ -184,6 +228,22 @@ export function App(): React.JSX.Element {
         >
           アーカイブ出力先
         </button>
+        <button
+          type="button"
+          ref={evaluationDashboardButtonRef}
+          className="app-header__archive-button"
+          onClick={() => setShowEvaluationDashboard(true)}
+        >
+          評価ダッシュボード
+        </button>
+        <button
+          type="button"
+          ref={evaluationSettingsButtonRef}
+          className="app-header__archive-button"
+          onClick={() => setShowEvaluationSettings(true)}
+        >
+          評価設定
+        </button>
       </header>
       {loadError && (
         <div className="banner banner--error" role="alert">
@@ -203,6 +263,7 @@ export function App(): React.JSX.Element {
         claudeResolved={claudeStatus?.resolved ?? true}
         purposesByPane={purposesByPane}
         onRegisterFocus={registerPaneFocus}
+        onEvaluationDialogVisibilityChange={handleEvaluationDialogVisibilityChange}
       />
       <StatusBar
         display={rateLimitsDisplay}
@@ -222,6 +283,9 @@ export function App(): React.JSX.Element {
       {showArchiveOutputSettings && (
         <ArchiveOutputSettings mirrorStatus={mirrorStatus} onClose={closeArchiveOutputSettings} />
       )}
+      {/* M9: same sibling-of-PaneGrid convention as the dialogs above. */}
+      {showEvaluationDashboard && <EvaluationDashboard onClose={closeEvaluationDashboard} />}
+      {showEvaluationSettings && <EvaluationSettings onClose={closeEvaluationSettings} />}
     </div>
   )
 }

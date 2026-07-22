@@ -1,6 +1,22 @@
 // Type-safe IPC contract shared by main, preload, and renderer processes (TD-6: cockpit:<domain>:<verb>).
 import type { JsonlDisplayTurn } from './jsonl'
 import type { LayoutMode } from './layout'
+import type { EvaluationInputStats, EvaluationSuggestion } from './evaluation'
+import type {
+  EvaluationAxisAverages,
+  EvaluationBucket,
+  EvaluationHistoryEntry,
+  EvaluationOverallSummary
+} from './evaluationAggregate'
+
+export type {
+  EvaluationInputStats,
+  EvaluationSuggestion,
+  EvaluationAxisAverages,
+  EvaluationBucket,
+  EvaluationHistoryEntry,
+  EvaluationOverallSummary
+}
 
 /** Valid pane slot indices for the 4-pane grid (spec §4.1). */
 export type PaneIndex = 0 | 1 | 2 | 3
@@ -61,7 +77,16 @@ export const IpcChannels = {
   archiveMirrorStatusGet: 'cockpit:archive:mirror-status',
   archiveMirrorStatusUpdated: 'cockpit:archive:mirrorStatusUpdated',
   archiveBackfillStart: 'cockpit:archive:backfill',
-  archiveBackfillProgress: 'cockpit:archive:backfillProgress'
+  archiveBackfillProgress: 'cockpit:archive:backfillProgress',
+  // ---- M9: purpose-completion evaluation (spec §2/§4.6 deferred "事後分析", ADR-0010) ----
+  appSettingsSetEvaluationEnabled: 'cockpit:appSettings:setEvaluationEnabled',
+  appSettingsSetEvaluationModel: 'cockpit:appSettings:setEvaluationModel',
+  evaluationOutputRootChooseFolder: 'cockpit:evaluation:chooseOutputRootFolder',
+  evaluationOutputRootSet: 'cockpit:evaluation:setOutputRoot',
+  evaluationGetForPurpose: 'cockpit:evaluation:getForPurpose',
+  evaluationListAll: 'cockpit:evaluation:listAll',
+  evaluationRerun: 'cockpit:evaluation:rerun',
+  evaluationUpdated: 'cockpit:evaluation:updated'
 } as const
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels]
@@ -124,6 +149,16 @@ export interface AppSettings {
   /** Persisted pane split layout (spec §4.1), restored on next launch so the window reopens with the
    * split the user last left it in. Defaults to 'single' when never set / stored value is unrecognized. */
   layoutMode: LayoutMode
+  /** M9 (ADR-0010 D-2): master on/off switch for the purpose-completion evaluation pipeline. Defaults to
+   * true (ON) -- when false, `completePurpose` behaves byte-for-byte as it did before M9 (no evaluation
+   * row is ever created). */
+  evaluationEnabled: boolean
+  /** M9 (ADR-0010 D-2): model passed to the headless `claude -p --model <model>` evaluation one-shot.
+   * Defaults to 'haiku' (same economy-first default as titleGenerator). */
+  evaluationModel: string
+  /** M9 (ADR-0010 D-5): optional output-destination folder for the evaluation report (Markdown+JSON),
+   * independent of the archive-output mirror root above. `null` means app-internal display only. */
+  evaluationOutputRoot: string | null
 }
 
 export interface SetClaudePathRequest {
@@ -354,4 +389,59 @@ export interface BackfillProgressEvent {
   processedSessions: number
   failedSessions: number
   done: boolean
+}
+
+// ---- M9: purpose-completion evaluation (spec §2/§4.6 deferred "事後分析", ADR-0010, §5 evaluations
+// table). No standalone "create evaluation" IPC entrypoint exists here either (same design as purposes'
+// paneLaunchStart) -- an evaluation row only ever comes into existence via completePurpose's fire-and-
+// forget trigger (D-1) or the explicit evaluationRerun below; the renderer only ever reads. ----
+
+export interface SetEvaluationEnabledRequest {
+  enabled: boolean
+}
+
+export interface SetEvaluationModelRequest {
+  model: string
+}
+
+/** Same discriminated-result shape as SetArchiveOutputRootResult (ADR-0008 D-5 precedent): a probe
+ * failure is a typed, renderer-displayable outcome, never a thrown error (silent failure prohibited). */
+export type SetEvaluationOutputRootRequest = { root: string | null }
+export type SetEvaluationOutputRootResult = { ok: true } | { ok: false; reason: string }
+
+export type EvaluationStatus = 'pending' | 'ok' | 'error' | 'skipped'
+
+/** `null` = not applicable (evaluation not yet 'ok', or no output root configured at the time it became
+ * 'ok'); 'written'/'error' only ever apply once the evaluation itself is 'ok' (D-5: a report-write
+ * failure never flips the evaluation's own `status` to 'error'). */
+export type EvaluationReportState = 'written' | 'error' | null
+
+/** DTO pushed/returned for a single evaluation row (spec §5 `evaluations` table, main/db/evaluationRepo.ts).
+ * Score fields are `null` while `status` is 'pending'/'skipped'/'error' (D-3: DB stores the raw,
+ * requirement-literal polarity -- stress/commCost are "higher is worse"; the renderer's radar chart is
+ * solely responsible for the "larger area = better" 100-x display transform, spec §4/D-3). */
+export interface EvaluationSummary {
+  id: string
+  purposeId: string
+  createdAt: number
+  model: string | null
+  status: EvaluationStatus
+  smoothness: number | null
+  stress: number | null
+  commCost: number | null
+  summary: string | null
+  suggestions: EvaluationSuggestion[]
+  inputStats: EvaluationInputStats | null
+  lastError: string | null
+  reportState: EvaluationReportState
+}
+
+export interface EvaluationGetForPurposeRequest {
+  purposeId: string
+}
+
+/** R-7: re-run always creates a brand-new `evaluations` row (append-only) rather than editing the
+ * existing one -- fire-and-forget, same as the original completePurpose-triggered run (D-1/D-4). */
+export interface EvaluationRerunRequest {
+  purposeId: string
 }

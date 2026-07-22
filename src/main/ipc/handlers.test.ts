@@ -29,6 +29,7 @@ import type { PurposeCoordinator } from '../pty/purposeCoordinator'
 import type { UsageCoordinator } from '../telemetry/usageCoordinator'
 import type { ArchiveBrowserPort } from '../archive/archiveBrowser'
 import type { MirrorControlPort } from '../archive/mirror/mirrorCoordinator'
+import type { EvaluationCoordinator } from '../evaluation/evaluationCoordinator'
 
 type Handler = (event: unknown, req: unknown) => unknown
 
@@ -98,22 +99,36 @@ function makeFakeMirrorControl(): MirrorControlPort & {
   }
 }
 
+function makeFakeEvaluationCoordinator(): EvaluationCoordinator & {
+  rerun: ReturnType<typeof vi.fn>
+} {
+  return {
+    triggerForCompletedPurpose: vi.fn(),
+    rerun: vi.fn()
+  } as unknown as EvaluationCoordinator & { rerun: ReturnType<typeof vi.fn> }
+}
+
 function setup(isRunning: (pane: number) => boolean): {
   ptyManager: PtyManager
   purposeCoordinator: ReturnType<typeof makeFakePurposeCoordinator>
   archiveBrowser: ReturnType<typeof makeFakeArchiveBrowser>
   mirrorControl: ReturnType<typeof makeFakeMirrorControl>
+  evaluationCoordinator: ReturnType<typeof makeFakeEvaluationCoordinator>
 } {
   registeredHandlers.clear()
   const ptyManager = makeFakePtyManager(isRunning)
   const purposeCoordinator = makeFakePurposeCoordinator()
   const archiveBrowser = makeFakeArchiveBrowser()
   const mirrorControl = makeFakeMirrorControl()
+  const evaluationCoordinator = makeFakeEvaluationCoordinator()
   const usageCoordinator = { refreshDisplay: vi.fn() } as unknown as UsageCoordinator
-  // M6: setArchiveOutputRoot (called by the archiveOutputRootSet handler) does a raw db.prepare(...).run(...)
-  // -- stub just enough of better-sqlite3's shape for that call to no-op rather than throw, matching this
-  // test file's existing convention of never touching a real SQLite engine (see this file's header comment).
-  const db = { prepare: vi.fn(() => ({ run: vi.fn() })) } as unknown as Database
+  // M6/M9: setArchiveOutputRoot/setEvaluationOutputRoot etc (called by their respective handlers) do a raw
+  // db.prepare(...).run(...)/.get(...)/.all(...) -- stub just enough of better-sqlite3's shape for those
+  // calls to no-op/return empty rather than throw, matching this test file's existing convention of never
+  // touching a real SQLite engine (see this file's header comment).
+  const db = {
+    prepare: vi.fn(() => ({ run: vi.fn(), get: vi.fn(() => undefined), all: vi.fn(() => []) }))
+  } as unknown as Database
   const window = {} as unknown as BrowserWindow
   registerIpcHandlers(
     window,
@@ -123,9 +138,10 @@ function setup(isRunning: (pane: number) => boolean): {
     purposeCoordinator,
     archiveBrowser,
     'C:\\fake\\userData\\archive',
-    mirrorControl
+    mirrorControl,
+    evaluationCoordinator
   )
-  return { ptyManager, purposeCoordinator, archiveBrowser, mirrorControl }
+  return { ptyManager, purposeCoordinator, archiveBrowser, mirrorControl, evaluationCoordinator }
 }
 
 describe('paneLaunchStart/paneLaunchResume isRunning guard (M4 FIX iter3 #5)', () => {
@@ -365,5 +381,100 @@ describe('appSettingsSetLayoutMode', () => {
 
     expect(() => handler?.(undefined, { layoutMode: 'split3' })).toThrow(/invalid layout mode/)
     expect(() => handler?.(undefined, { layoutMode: '' })).toThrow(/invalid layout mode/)
+  })
+})
+
+// M9 (spec §2/§4.6, ADR-0010): purpose-completion evaluation IPC surface.
+describe('M9 evaluation IPC handlers', () => {
+  beforeEach(() => {
+    unregisterIpcHandlers()
+    registeredHandlers.clear()
+  })
+
+  it('appSettingsSetEvaluationEnabled persists a boolean without throwing', () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.appSettingsSetEvaluationEnabled)
+    expect(() => handler?.(undefined, { enabled: false })).not.toThrow()
+  })
+
+  it('appSettingsSetEvaluationEnabled rejects a non-boolean payload', () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.appSettingsSetEvaluationEnabled)
+    expect(() => handler?.(undefined, { enabled: 'yes' })).toThrow(/Invalid evaluationEnabled/)
+  })
+
+  it('appSettingsSetEvaluationModel persists a non-empty model string', () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.appSettingsSetEvaluationModel)
+    expect(() => handler?.(undefined, { model: 'sonnet' })).not.toThrow()
+  })
+
+  it('appSettingsSetEvaluationModel rejects an empty model string', () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.appSettingsSetEvaluationModel)
+    expect(() => handler?.(undefined, { model: '' })).toThrow(/Invalid model/)
+  })
+
+  it('evaluationOutputRootSet: clearing (root: null) always succeeds without probing the filesystem', async () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.evaluationOutputRootSet)
+    const result = await handler?.(undefined, { root: null })
+    expect(result).toEqual({ ok: true })
+  })
+
+  it('evaluationOutputRootSet: accepts a valid writable candidate root', async () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.evaluationOutputRootSet)
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-handlers-eval-test-'))
+    try {
+      const result = await handler?.(undefined, { root: tmpRoot })
+      expect(result).toEqual({ ok: true })
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('evaluationOutputRootSet: reports a probe failure as a typed result rather than throwing', async () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.evaluationOutputRootSet)
+    const tmpParent = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-handlers-eval-test-'))
+    const blockedByFile = path.join(tmpParent, 'blocked')
+    fs.writeFileSync(blockedByFile, 'not a directory')
+    try {
+      const result = await handler?.(undefined, { root: blockedByFile })
+      expect(result).toEqual({ ok: false, reason: expect.any(String) })
+    } finally {
+      fs.rmSync(tmpParent, { recursive: true, force: true })
+    }
+  })
+
+  it('evaluationGetForPurpose rejects an empty purposeId', () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.evaluationGetForPurpose)
+    expect(() => handler?.(undefined, { purposeId: '' })).toThrow(/Invalid purposeId/)
+  })
+
+  it('evaluationGetForPurpose returns null when there is no row for the purpose', () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.evaluationGetForPurpose)
+    const result = handler?.(undefined, { purposeId: 'purpose-1' })
+    expect(result).toBeNull()
+  })
+
+  it('evaluationListAll returns an array (delegates to evaluationRepo)', () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.evaluationListAll)
+    const result = handler?.(undefined, undefined)
+    expect(result).toEqual([])
+  })
+
+  it('evaluationRerun delegates to evaluationCoordinator.rerun and rejects an empty purposeId', () => {
+    const { evaluationCoordinator } = setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.evaluationRerun)
+
+    handler?.(undefined, { purposeId: 'purpose-1' })
+    expect(evaluationCoordinator.rerun).toHaveBeenCalledWith('purpose-1')
+
+    expect(() => handler?.(undefined, { purposeId: '' })).toThrow(/Invalid purposeId/)
   })
 })

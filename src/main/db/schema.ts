@@ -147,4 +147,30 @@ export function migrate(database: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_archive_mirror_dest_root ON archive_mirror(dest_root);
   `)
+
+  database.exec(`
+    -- M9 (spec §5 evaluations table, ADR-0010): purpose-completion evaluation history. Append-only --
+    -- main/db/evaluationRepo.ts's public API only ever INSERTs a new row or UPDATEs 'status'
+    -- (pending -> ok/error/skipped, exactly once) and 'report_state'; there is no delete/score-rewrite
+    -- path (R-6). Multiple rows may exist per purpose_id (re-runs, R-7) -- the current evaluation for a
+    -- purpose is always its most recent row by created_at.
+    CREATE TABLE IF NOT EXISTS evaluations (
+      id                TEXT PRIMARY KEY,
+      purpose_id        TEXT NOT NULL,
+      created_at        INTEGER NOT NULL,
+      model             TEXT,
+      status            TEXT NOT NULL DEFAULT 'pending',
+      smoothness        INTEGER,
+      stress            INTEGER,
+      comm_cost         INTEGER,
+      summary           TEXT,
+      suggestions_json  TEXT,
+      input_stats_json  TEXT,
+      last_error        TEXT,
+      report_state      TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_evaluations_purpose_created ON evaluations(purpose_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_evaluations_created_at ON evaluations(created_at);
+  `)
 }

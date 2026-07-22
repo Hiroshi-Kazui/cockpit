@@ -32,7 +32,15 @@ import {
   type SetArchiveOutputRootRequest,
   type SetArchiveOutputRootResult,
   type MirrorStatusSummary,
-  type BackfillProgressEvent
+  type BackfillProgressEvent,
+  type SetEvaluationEnabledRequest,
+  type SetEvaluationModelRequest,
+  type SetEvaluationOutputRootRequest,
+  type SetEvaluationOutputRootResult,
+  type EvaluationGetForPurposeRequest,
+  type EvaluationRerunRequest,
+  type EvaluationSummary,
+  type EvaluationHistoryEntry
 } from '../../shared/ipc'
 import { PtyManager } from '../pty/ptyManager'
 import { resolveClaude, ClaudeResolutionError } from '../pty/resolveClaude'
@@ -42,7 +50,10 @@ import {
   getAppSettings,
   setClaudePath,
   setArchiveOutputRoot,
-  setLayoutMode
+  setLayoutMode,
+  setEvaluationEnabled,
+  setEvaluationModel,
+  setEvaluationOutputRoot
 } from '../db/appSettingsRepo'
 import { isLayoutMode } from '../../shared/layout'
 import { getAllActivePurposes } from '../db/purposeRepo'
@@ -52,6 +63,8 @@ import type { ArchiveBrowserPort } from '../archive/archiveBrowser'
 import type { MirrorControlPort } from '../archive/mirror/mirrorCoordinator'
 import { probeWritable } from '../archive/mirror/fsSink'
 import { validateMirrorRoot } from '../../shared/mirrorPlan'
+import type { EvaluationCoordinator } from '../evaluation/evaluationCoordinator'
+import { getLatestEvaluationForPurpose, listAllEvaluationHistory } from '../db/evaluationRepo'
 
 function assertPane(pane: unknown): asserts pane is 0 | 1 | 2 | 3 {
   if (typeof pane !== 'number' || !isPaneIndex(pane)) {
@@ -134,7 +147,11 @@ export function registerIpcHandlers(
   /** M6: the spool root (userData/archive) -- used only to validate a candidate output root never
    * resolves to the spool itself or a path underneath it (ADR-0008/D-5 self-mirror prevention). */
   spoolRoot: string,
-  mirrorControl: MirrorControlPort
+  mirrorControl: MirrorControlPort,
+  /** M9 (ADR-0010): the evaluation pipeline orchestrator -- only its fire-and-forget `rerun` entrypoint
+   * is invoked from here (R-7); reads go straight through evaluationRepo, same as archiveBrowser's read
+   * path bypasses PurposeCoordinator for reads. */
+  evaluationCoordinator: EvaluationCoordinator
 ): void {
   ipcMain.handle(IpcChannels.ptyWrite, (_event, req: PtyWriteRequest): void => {
     assertPane(req.pane)
@@ -370,6 +387,76 @@ export function registerIpcHandlers(
       if (window.isDestroyed() || window.webContents.isDestroyed()) return
       window.webContents.send(IpcChannels.archiveBackfillProgress, event)
     })
+  })
+
+  // ---- M9: purpose-completion evaluation (spec §2/§4.6, ADR-0010) ----
+
+  ipcMain.handle(
+    IpcChannels.appSettingsSetEvaluationEnabled,
+    (_event, req: SetEvaluationEnabledRequest): void => {
+      if (typeof req.enabled !== 'boolean') {
+        throw new Error('Invalid evaluationEnabled: expected a boolean')
+      }
+      setEvaluationEnabled(db, req.enabled)
+    }
+  )
+
+  ipcMain.handle(
+    IpcChannels.appSettingsSetEvaluationModel,
+    (_event, req: SetEvaluationModelRequest): void => {
+      assertNonEmptyString(req.model, 'model')
+      setEvaluationModel(db, req.model)
+    }
+  )
+
+  ipcMain.handle(
+    IpcChannels.evaluationOutputRootChooseFolder,
+    async (): Promise<ChooseFolderResult> => {
+      const result = await dialog.showOpenDialog(window, {
+        properties: ['openDirectory', 'createDirectory']
+      })
+      if (result.canceled || result.filePaths.length === 0) {
+        return { canceled: true, path: null }
+      }
+      return { canceled: false, path: result.filePaths[0] }
+    }
+  )
+
+  // D-5 "設定時はプローブ検証（ADR-0008 D-5 と同型）" -- reuses the exact same write-probe fsSink already
+  // exercises for the archive-output mirror root; `root: null` clears the setting and always succeeds
+  // (mirrors archiveOutputRootSet's identical "解除 never needs to write-probe" behavior above).
+  ipcMain.handle(
+    IpcChannels.evaluationOutputRootSet,
+    async (_event, req: SetEvaluationOutputRootRequest): Promise<SetEvaluationOutputRootResult> => {
+      if (req.root === null) {
+        setEvaluationOutputRoot(db, null)
+        return { ok: true }
+      }
+      assertNonEmptyString(req.root, 'root')
+      const probe = await probeWritable(req.root)
+      if (!probe.ok) return { ok: false, reason: probe.reason }
+      setEvaluationOutputRoot(db, req.root)
+      return { ok: true }
+    }
+  )
+
+  ipcMain.handle(
+    IpcChannels.evaluationGetForPurpose,
+    (_event, req: EvaluationGetForPurposeRequest): EvaluationSummary | null => {
+      assertNonEmptyString(req.purposeId, 'purposeId')
+      return getLatestEvaluationForPurpose(db, req.purposeId)
+    }
+  )
+
+  ipcMain.handle(IpcChannels.evaluationListAll, (): EvaluationHistoryEntry[] => {
+    return listAllEvaluationHistory(db)
+  })
+
+  // R-7: fire-and-forget, same as the completePurpose-triggered run -- the IPC response returns
+  // immediately; progress is observed via the evaluationUpdated push channel.
+  ipcMain.handle(IpcChannels.evaluationRerun, (_event, req: EvaluationRerunRequest): void => {
+    assertNonEmptyString(req.purposeId, 'purposeId')
+    evaluationCoordinator.rerun(req.purposeId)
   })
 }
 

@@ -11,6 +11,7 @@ import { useArchiveWarning } from '../hooks/useArchiveWarning'
 import { usePaneContextUsage } from '../hooks/usePaneContextUsage'
 import { ContextGauge } from './ContextGauge'
 import { PurposeDialog } from './PurposeDialog'
+import { EvaluationDialog } from './EvaluationDialog'
 
 interface PaneProps {
   paneIndex: PaneIndex
@@ -24,6 +25,12 @@ interface PaneProps {
    * callback with the App-level shortcut registry (usePaneFocusShortcuts, wired in App.tsx). Passed
    * `null` to unregister the entry entirely on unmount. */
   onRegisterFocus: (pane: PaneIndex, focusFn: (() => void) | null) => void
+  /** M9 FIX (iter1 major): tells App.tsx whether this pane's EvaluationDialog is currently open, so the
+   * global Ctrl+1..4 pane-focus shortcut (usePaneFocusShortcuts) can be disabled while it is -- the same
+   * "modal is open, don't let a global shortcut reach a pty behind it" treatment SessionBrowser/
+   * ArchiveOutputSettings/EvaluationDashboard/EvaluationSettings already get in App.tsx, which this
+   * pane-local dialog was previously missing from. */
+  onEvaluationDialogVisibilityChange: (pane: PaneIndex, visible: boolean) => void
 }
 
 function describeError(err: unknown): string {
@@ -36,12 +43,20 @@ export function Pane({
   onCwdChange,
   claudeResolved,
   purpose,
-  onRegisterFocus
+  onRegisterFocus,
+  onEvaluationDialogVisibilityChange
 }: PaneProps): React.JSX.Element {
   const { containerRef, running, error, start, stop, focus } = usePtyPane(paneIndex)
   const [folderError, setFolderError] = useState<string | null>(null)
   const [purposeError, setPurposeError] = useState<string | null>(null)
   const [showDialog, setShowDialog] = useState(false)
+  // M9 (ADR-0010 R-2): opened automatically right after a successful "完了" action *when evaluation is
+  // enabled* (handleComplete re-checks app_settings.evaluation_enabled before setting this -- see its own
+  // comment), and always re-openable afterward via the "評価を見る" button for any completed purpose
+  // regardless of the current toggle state (a purpose evaluated while enabled stays viewable after being
+  // turned off; EvaluationDialog itself renders an explicit "無効" state instead of an eternal spinner
+  // when there is no evaluation to show and the toggle is off).
+  const [showEvaluation, setShowEvaluation] = useState(false)
   const session = useSessionTelemetry(paneIndex)
   const archiveWarning = useArchiveWarning(paneIndex)
   const contextUsage = usePaneContextUsage(paneIndex, running)
@@ -53,6 +68,23 @@ export function Pane({
     onRegisterFocus(paneIndex, focus)
     return () => onRegisterFocus(paneIndex, null)
   }, [paneIndex, focus, onRegisterFocus])
+
+  // M9 FIX (iter1 major): defensive unmount cleanup mirroring the focus registration above -- panes are
+  // always kept mounted for the app's lifetime in practice (PaneGrid.tsx), but this guarantees App.tsx's
+  // evaluationDialogOpenPanes set can never keep a stale "open" entry for a pane that no longer exists.
+  useEffect(() => {
+    return () => onEvaluationDialogVisibilityChange(paneIndex, false)
+  }, [paneIndex, onEvaluationDialogVisibilityChange])
+
+  function openEvaluationDialog(): void {
+    setShowEvaluation(true)
+    onEvaluationDialogVisibilityChange(paneIndex, true)
+  }
+
+  function closeEvaluationDialog(): void {
+    setShowEvaluation(false)
+    onEvaluationDialogVisibilityChange(paneIndex, false)
+  }
 
   const isActivePurpose = purpose?.status === 'active'
   // M4 FIX (usability #2/#3): an active purpose whose text is still undecided (spec §4.2 "目的が空で
@@ -121,6 +153,23 @@ export function Pane({
       await window.cockpit.purpose.complete({ purposeId: purpose.id })
     } catch (err) {
       setPurposeError(describeError(err))
+      return
+    }
+    // M9 FIX (iter1 blocking): completion triggers evaluation server-side (fire-and-forget, R-1/R-2), but
+    // only when the master toggle is on -- evaluationCoordinator.run() returns before creating any row or
+    // pushing any update when `evaluation_enabled` is off (D-2), so unconditionally auto-opening here
+    // previously left the dialog stuck on "読み込み中…" forever (a regression from M8, which never opened
+    // anything on completion). Re-check the live setting right before deciding to open, rather than trust
+    // a value fetched/cached earlier in this pane's lifetime, since it can be toggled at any time from the
+    // 評価設定 dialog.
+    try {
+      const settings = await window.cockpit.appSettings.get()
+      if (settings.evaluationEnabled) openEvaluationDialog()
+    } catch (err) {
+      // Completion itself already succeeded above -- a failure here only means we can't safely tell
+      // whether to auto-open the dialog, so we don't guess (never silently pretend an evaluation started,
+      // CLAUDE.md silent-failure prohibition). The "評価を見る" button remains available afterward.
+      console.error('[pane] failed to read evaluation settings after completing purpose', err)
     }
   }
 
@@ -159,6 +208,13 @@ export function Pane({
         {isActivePurpose && (
           <button type="button" onClick={() => void handleComplete()} title="この目的を完了にする">
             完了
+          </button>
+        )}
+        {/* M9 (ADR-0010 R-2/R-7): revisit a completed purpose's evaluation (view result / see pending or
+            error state / re-run) without needing to complete it again. */}
+        {purpose?.status === 'completed' && (
+          <button type="button" onClick={openEvaluationDialog} title="この目的の評価を見る">
+            評価を見る
           </button>
         )}
         {running ? (
@@ -252,6 +308,13 @@ export function Pane({
           cwd={defaultCwd}
           onCancel={() => setShowDialog(false)}
           onConfirm={(text) => void handleConfirmDialog(text)}
+        />
+      )}
+      {showEvaluation && purpose && (
+        <EvaluationDialog
+          purposeId={purpose.id}
+          purposeTitle={purpose.title}
+          onClose={closeEvaluationDialog}
         />
       )}
     </div>

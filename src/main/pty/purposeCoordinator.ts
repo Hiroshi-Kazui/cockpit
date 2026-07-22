@@ -49,6 +49,10 @@ export interface PurposeCoordinatorDeps {
   generateTitle: (purposeText: string) => Promise<string>
   onPurposeUpdated: (summary: PurposeSummary) => void
   createWatcher?: (onReady: (reason: LaunchReadyReason) => void) => LaunchWatcherLike
+  /** M9 (ADR-0010 D-1): fired (fire-and-forget -- must not be awaited here) right after a purpose is
+   * successfully marked completed, so the evaluation pipeline can start without ever delaying
+   * completePurpose's own return value. Optional so existing tests/wiring that predate M9 need no change. */
+  onPurposeCompleted?: (purposeId: string) => void
 }
 
 function defaultCreateWatcher(onReady: (reason: LaunchReadyReason) => void): LaunchWatcherLike {
@@ -150,6 +154,9 @@ export class PurposeCoordinator {
       throw new Error(`Purpose not found: ${purposeId}`)
     }
     this.deps.onPurposeUpdated(updated)
+    // M9 (ADR-0010 D-1): kicks off the evaluation pipeline fire-and-forget -- not awaited, so this
+    // method's own return (and thus the completePurpose IPC response) is never delayed by it.
+    this.deps.onPurposeCompleted?.(updated.id)
     return updated
   }
 

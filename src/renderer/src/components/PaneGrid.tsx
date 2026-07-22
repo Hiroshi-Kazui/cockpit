@@ -13,6 +13,8 @@ interface PaneGridProps {
   purposesByPane: Readonly<Record<PaneIndex, PurposeSummary | null>>
   /** M5: forwarded straight through to each Pane -- see Pane.tsx's prop doc comment. */
   onRegisterFocus: (pane: PaneIndex, focusFn: (() => void) | null) => void
+  /** M9 FIX: forwarded straight through to each Pane -- see Pane.tsx's prop doc comment. */
+  onEvaluationDialogVisibilityChange: (pane: PaneIndex, visible: boolean) => void
 }
 
 export function PaneGrid({
@@ -22,7 +24,8 @@ export function PaneGrid({
   onCwdChange,
   claudeResolved,
   purposesByPane,
-  onRegisterFocus
+  onRegisterFocus,
+  onEvaluationDialogVisibilityChange
 }: PaneGridProps): React.JSX.Element {
   return (
     <div className={`pane-grid pane-grid--${layout}`}>
@@ -39,6 +42,7 @@ export function PaneGrid({
             claudeResolved={claudeResolved}
             purpose={purposesByPane[pane]}
             onRegisterFocus={onRegisterFocus}
+            onEvaluationDialogVisibilityChange={onEvaluationDialogVisibilityChange}
           />
         </div>
       ))}

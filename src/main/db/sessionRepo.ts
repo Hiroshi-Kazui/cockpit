@@ -138,6 +138,16 @@ export function getAllOpenSessions(db: Database): SessionRow[] {
   return rows.map(toRow)
 }
 
+/** M9 (ADR-0010 D-1): every session ever linked to a purpose (open or closed, any origin) -- the input
+ * set for that purpose's completion evaluation. Ordered by started_at so evaluationCoordinator.ts reads
+ * transcripts in chronological order (matters for D-8's deterministic "ユーザ発言を全量優先" ordering). */
+export function listSessionsForPurpose(db: Database, purposeId: string): SessionRow[] {
+  const rows = db
+    .prepare('SELECT * FROM sessions WHERE purpose_id = ? ORDER BY started_at ASC')
+    .all(purposeId) as RawSessionRow[]
+  return rows.map(toRow)
+}
+
 interface RawSessionListRow {
   id: string
   pane: number

@@ -35,7 +35,15 @@ import {
   type SetArchiveOutputRootRequest,
   type SetArchiveOutputRootResult,
   type MirrorStatusSummary,
-  type BackfillProgressEvent
+  type BackfillProgressEvent,
+  type SetEvaluationEnabledRequest,
+  type SetEvaluationModelRequest,
+  type SetEvaluationOutputRootRequest,
+  type SetEvaluationOutputRootResult,
+  type EvaluationGetForPurposeRequest,
+  type EvaluationRerunRequest,
+  type EvaluationSummary,
+  type EvaluationHistoryEntry
 } from '../shared/ipc'
 
 export interface CockpitApi {
@@ -95,6 +103,19 @@ export interface CockpitApi {
     onMirrorStatusUpdated: (listener: (summary: MirrorStatusSummary) => void) => () => void
     startBackfill: () => Promise<void>
     onBackfillProgress: (listener: (event: BackfillProgressEvent) => void) => () => void
+  }
+  /** M9 (spec §2/§4.6 deferred "事後分析", ADR-0010): purpose-completion evaluation. Read-only + one
+   * explicit re-run action -- there is no create/edit/delete channel here either (an evaluation row only
+   * ever comes into existence via completePurpose's server-side trigger or this rerun call). */
+  evaluation: {
+    getForPurpose: (req: EvaluationGetForPurposeRequest) => Promise<EvaluationSummary | null>
+    listAll: () => Promise<EvaluationHistoryEntry[]>
+    rerun: (req: EvaluationRerunRequest) => Promise<void>
+    onUpdated: (listener: (summary: EvaluationSummary) => void) => () => void
+    chooseOutputRootFolder: () => Promise<ChooseFolderResult>
+    setOutputRoot: (req: SetEvaluationOutputRootRequest) => Promise<SetEvaluationOutputRootResult>
+    setEnabled: (req: SetEvaluationEnabledRequest) => Promise<void>
+    setModel: (req: SetEvaluationModelRequest) => Promise<void>
   }
 }
 
@@ -160,6 +181,16 @@ const api: CockpitApi = {
     startBackfill: () => ipcRenderer.invoke(IpcChannels.archiveBackfillStart),
     onBackfillProgress: (listener) =>
       subscribe<BackfillProgressEvent>(IpcChannels.archiveBackfillProgress, listener)
+  },
+  evaluation: {
+    getForPurpose: (req) => ipcRenderer.invoke(IpcChannels.evaluationGetForPurpose, req),
+    listAll: () => ipcRenderer.invoke(IpcChannels.evaluationListAll),
+    rerun: (req) => ipcRenderer.invoke(IpcChannels.evaluationRerun, req),
+    onUpdated: (listener) => subscribe<EvaluationSummary>(IpcChannels.evaluationUpdated, listener),
+    chooseOutputRootFolder: () => ipcRenderer.invoke(IpcChannels.evaluationOutputRootChooseFolder),
+    setOutputRoot: (req) => ipcRenderer.invoke(IpcChannels.evaluationOutputRootSet, req),
+    setEnabled: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetEvaluationEnabled, req),
+    setModel: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetEvaluationModel, req)
   }
 }
 

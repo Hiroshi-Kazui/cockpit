@@ -58,9 +58,41 @@ function readAllStdin() {
   })
 }
 
-// ---- Mode 1: headless `-p` title generation ----
-async function runHeadlessTitleMode() {
-  await readAllStdin()
+// ---- Mode 1: headless `-p` one-shot (title generation, M4, OR purpose evaluation, M9) ----
+// Both title generation (main/pty/titleGenerator.ts) and evaluation (main/evaluation/evaluationRunner.ts)
+// invoke the identical `-p --model <model>` shape and pass their prompt via stdin only (TD-5) -- argv never
+// carries which one this is. Distinguished here by sniffing the prompt text itself: buildEvaluationPrompt
+// (shared/evaluation.ts) always embeds the literal string "commCost" (part of the JSON schema it demands),
+// which buildTitlePrompt (shared/title.ts) never does. `--model e2e-fail-model` (M9 E2E fixture-only
+// sentinel; never a real claude model) deliberately returns unparseable output so tests can exercise the
+// evaluation error/re-run path deterministically without needing a second fake binary.
+async function runHeadlessMode() {
+  const model = argValue('--model')
+  const stdin = await readAllStdin()
+
+  if (model === 'e2e-fail-model') {
+    process.stdout.write('sorry, something went wrong (not valid JSON)\n')
+    process.exit(0)
+    return
+  }
+
+  if (stdin.includes('commCost')) {
+    process.stdout.write(
+      JSON.stringify({
+        smoothness: 82,
+        stress: 15,
+        commCost: 20,
+        summary: 'E2Eフェイク評価: 順調に進みました',
+        suggestions: [
+          { category: 'user', text: 'E2Eユーザー改善案' },
+          { category: 'environment', text: 'E2E環境改善案' }
+        ]
+      }) + '\n'
+    )
+    process.exit(0)
+    return
+  }
+
   process.stdout.write('E2Eフェイクタイトル\n')
   process.exit(0)
 }
@@ -170,7 +202,7 @@ async function runInteractiveMode() {
 }
 
 if (argv.includes('-p')) {
-  runHeadlessTitleMode()
+  runHeadlessMode()
 } else {
   runInteractiveMode()
 }

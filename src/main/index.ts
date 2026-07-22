@@ -10,6 +10,7 @@ import {
   backfillPurposeTitle,
   createSqliteSessionStore,
   getSession,
+  listSessionsForPurpose,
   repairOpenSessions
 } from './db/sessionRepo'
 import {
@@ -26,6 +27,17 @@ import { PtyManager } from './pty/ptyManager'
 import { PurposeCoordinator } from './pty/purposeCoordinator'
 import { generateTitle } from './pty/titleGenerator'
 import { SessionArchiver } from './archive/archiver'
+import { EvaluationCoordinator } from './evaluation/evaluationCoordinator'
+import { runEvaluation } from './evaluation/evaluationRunner'
+import { readSpoolSessionForEvaluation } from './evaluation/evaluationTranscriptReader'
+import { writeEvaluationReportFiles } from './evaluation/evaluationReportWriter'
+import {
+  finalizeEvaluationError,
+  finalizeEvaluationOk,
+  insertPendingEvaluation,
+  insertSkippedEvaluation,
+  setEvaluationReportState
+} from './db/evaluationRepo'
 import {
   createDebouncedMetadataWriter,
   writeSessionMetadata,
@@ -48,6 +60,7 @@ import { parseStatusLineMessage } from '../shared/statusline'
 import {
   IpcChannels,
   isPaneIndex,
+  type EvaluationSummary,
   type PaneContextUsageEvent,
   type PtyDataEvent,
   type PtyExitEvent,
@@ -277,6 +290,33 @@ function createWindow(): void {
   })
   ptyManager = manager
 
+  // M9 (ADR-0010): the purpose-completion evaluation pipeline. Constructed before `purposes` below (unlike
+  // usage/purposeDetection/mirror, it needs no module-level forward-reference binding -- nothing it depends
+  // on is itself constructed later) purely so PurposeCoordinator's onPurposeCompleted hook can close over
+  // this local `evaluation` const directly.
+  const evaluation = new EvaluationCoordinator({
+    getEnabled: () => getAppSettings(db).evaluationEnabled,
+    getModel: () => getAppSettings(db).evaluationModel,
+    getOutputRoot: () => getAppSettings(db).evaluationOutputRoot,
+    getPurposeText: (purposeId) => getPurposeById(db, purposeId)?.text ?? null,
+    getPurposeTitle: (purposeId) => getPurposeById(db, purposeId)?.title ?? null,
+    listSessionsForPurpose: (purposeId) =>
+      listSessionsForPurpose(db, purposeId).map((row) => ({ id: row.id, jsonlPath: row.jsonlPath })),
+    readSession: (sessionId, jsonlPath) =>
+      readSpoolSessionForEvaluation(archiveRootDir(), sessionId, jsonlPath),
+    insertPending: (params) => insertPendingEvaluation(db, params),
+    insertSkipped: (params) => insertSkippedEvaluation(db, params),
+    finalizeOk: (id, params) => finalizeEvaluationOk(db, id, params),
+    finalizeError: (id, lastError) => finalizeEvaluationError(db, id, lastError),
+    setReportState: (id, state) => setEvaluationReportState(db, id, state),
+    runEvaluation: (prompt, model) => runEvaluation(prompt, getAppSettings(db).claudePath, model),
+    writeReport: (root, evalId, markdown, json) => writeEvaluationReportFiles(root, evalId, markdown, json),
+    onEvaluationUpdated: (summary: EvaluationSummary) => {
+      if (window.isDestroyed() || window.webContents.isDestroyed()) return
+      window.webContents.send(IpcChannels.evaluationUpdated, summary)
+    }
+  })
+
   const purposes = new PurposeCoordinator({
     spawnPty: (pane, cwd, extraArgs) => manager.spawn(pane, cwd, extraArgs),
     writeToPty: (pane, data) => manager.write(pane, data),
@@ -296,7 +336,10 @@ function createWindow(): void {
     onPurposeUpdated: (summary: PurposeSummary) => {
       if (window.isDestroyed() || window.webContents.isDestroyed()) return
       window.webContents.send(IpcChannels.purposeUpdated, summary)
-    }
+    },
+    // M9 (ADR-0010 D-1): fire-and-forget -- never awaited, so completePurpose's own IPC response is never
+    // delayed by the evaluation pipeline.
+    onPurposeCompleted: (purposeId) => evaluation.triggerForCompletedPurpose(purposeId)
   })
   purposeCoordinator = purposes
 
@@ -329,7 +372,8 @@ function createWindow(): void {
     purposes,
     archiveBrowser,
     archiveRootDir(),
-    mirror
+    mirror,
+    evaluation
   )
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
