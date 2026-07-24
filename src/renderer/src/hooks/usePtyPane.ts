@@ -54,13 +54,28 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.open(container)
-    // Default DOM renderer reuses row elements across scroll, which can leave stale glyph/width
-    // state on the leftmost cell of a recycled row -- switch to the canvas renderer (repaints the
-    // whole buffer each frame, no per-row DOM reuse) to avoid that class of scroll artifact.
-    term.loadAddon(new CanvasAddon())
-    fitAddon.fit()
     termRef.current = term
     fitAddonRef.current = fitAddon
+
+    // The canvas renderer (loaded lazily below) measures the terminal's pixel dimensions when it
+    // activates; activating it -- or calling fit() -- while the container still has zero layout size
+    // leaves the render service without `dimensions`, so a later scroll/resize/write throws
+    // "Cannot read properties of undefined (reading 'dimensions')" from Viewport.syncScrollArea.
+    // Defer both the CanvasAddon load and every fit() until the container actually has a non-zero
+    // size (the ResizeObserver below drives this); this also correctly delays them for a pane that
+    // starts hidden in a split layout until it first becomes visible.
+    let canvasAddon: CanvasAddon | null = null
+    const ensureRendererAndFit = (): void => {
+      if (container.clientWidth === 0 || container.clientHeight === 0) return
+      if (!canvasAddon) {
+        // Default DOM renderer reuses row elements across scroll, which can leave stale glyph/width
+        // state on the leftmost cell of a recycled row -- the canvas renderer repaints the whole
+        // buffer each frame (no per-row DOM reuse), avoiding that class of scroll artifact.
+        canvasAddon = new CanvasAddon()
+        term.loadAddon(canvasAddon)
+      }
+      fitAddon.fit()
+    }
 
     const dataDisposable = term.onData((data) => {
       if (!runningRef.current) return
@@ -76,7 +91,7 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
       })
     })
 
-    const resizeObserver = new ResizeObserver(() => fitAddon.fit())
+    const resizeObserver = new ResizeObserver(() => ensureRendererAndFit())
     resizeObserver.observe(container)
 
     return () => {
