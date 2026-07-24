@@ -119,6 +119,18 @@ export function computeResumeVerificationRange({
   destSize: number
   recordedSyncedBytes: number
 }): ResumeVerificationRange {
+  // A row already marked unrecoverable carries the UNRECOVERABLE_SYNCED_BYTES sentinel (not a real byte
+  // count) in `recordedSyncedBytes`. It must never be turned into a spool read range: the offset below
+  // (`recordedSyncedBytes - destSize`) would be an enormous garbage value (≈ MAX_SAFE_INTEGER) that
+  // readSpoolBytes then fails on with a misleading "short read ... at offset 9007199…" error. Refuse it
+  // up front so the caller keeps the row sentinel-blocked instead of attempting the read. (Defense in
+  // depth: rebaselineSession also short-circuits sentinel rows before ever reaching here.)
+  if (isUnrecoverableSyncedBytes(recordedSyncedBytes)) {
+    return {
+      ok: false,
+      reason: '記録済みのミラー進捗が回復不能としてマークされているため、自動同期を中止しました'
+    }
+  }
   if (destSize > recordedSyncedBytes) {
     return {
       ok: false,

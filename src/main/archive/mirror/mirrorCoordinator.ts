@@ -209,7 +209,12 @@ export class MirrorCoordinator implements MirrorControlPort {
     if (!sink) return // setOutputRoot(null) raced this call -- nothing to do
 
     const existing = this.repo.get(sessionId, root)
-    if (existing?.state === 'error' && isUnrecoverableSyncedBytes(existing.syncedBytes)) {
+    // A sentinel'd (unrecoverable) row must never be reprocessed, regardless of its `state` column: the
+    // sentinel value is the single source of truth for "permanently blocked" (isUnrecoverableSyncedBytes,
+    // mirrorPlan.ts). Also gating on `state === 'error'` here meant a sentinel row that somehow carried a
+    // non-error state slipped through and fed the sentinel into computeResumeVerificationRange, producing
+    // a garbage read offset (≈ MAX_SAFE_INTEGER - destSize) and a misleading "short read" error.
+    if (existing && isUnrecoverableSyncedBytes(existing.syncedBytes)) {
       return
     }
 
