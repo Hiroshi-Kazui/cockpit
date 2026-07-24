@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { CanvasAddon } from '@xterm/addon-canvas'
 import type { PaneIndex } from '@shared/ipc'
 
 export interface UsePtyPaneResult {
@@ -53,6 +54,10 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.open(container)
+    // Default DOM renderer reuses row elements across scroll, which can leave stale glyph/width
+    // state on the leftmost cell of a recycled row -- switch to the canvas renderer (repaints the
+    // whole buffer each frame, no per-row DOM reuse) to avoid that class of scroll artifact.
+    term.loadAddon(new CanvasAddon())
     fitAddon.fit()
     termRef.current = term
     fitAddonRef.current = fitAddon
