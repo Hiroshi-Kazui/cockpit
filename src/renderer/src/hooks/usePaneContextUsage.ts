@@ -15,12 +15,15 @@ export function usePaneContextUsage(
   running: boolean
 ): PaneContextUsage | null {
   const [usage, setUsage] = useState<PaneContextUsage | null>(null)
+  const [trackedLifecycle, setTrackedLifecycle] = useState({ paneIndex, running })
 
   // A fresh pty lifecycle (start or exit) invalidates any prior reading -- it belonged to the previous
-  // session, not whatever comes next in this pane.
-  useEffect(() => {
+  // session, not whatever comes next in this pane. Discarding it during render rather than in an
+  // effect means no frame is ever painted with the stale gauge still showing (spec §4.5).
+  if (trackedLifecycle.paneIndex !== paneIndex || trackedLifecycle.running !== running) {
+    setTrackedLifecycle({ paneIndex, running })
     setUsage(null)
-  }, [paneIndex, running])
+  }
 
   useEffect(() => {
     const unsubscribe = window.cockpit.usage.onPaneContextUpdated((event) => {

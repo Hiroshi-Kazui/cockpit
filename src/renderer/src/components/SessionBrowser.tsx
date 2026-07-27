@@ -90,18 +90,21 @@ export function SessionBrowser({ onClose }: SessionBrowserProps): React.JSX.Elem
     }
   }, [searchText])
 
-  useEffect(() => {
-    if (!selectedId) {
-      setTurns(null)
-      setDetailError(null)
-      setOmittedCount(0)
-      return
-    }
-    let cancelled = false
+  // Changing (or clearing) the selection invalidates the previously loaded detail. Adjusting during
+  // render rather than in an effect means the dialog never paints the old session's turns under the
+  // newly selected session's heading.
+  const [trackedSelectedId, setTrackedSelectedId] = useState(selectedId)
+  if (trackedSelectedId !== selectedId) {
+    setTrackedSelectedId(selectedId)
     setTurns(null)
-    setLoadingDetail(true)
     setDetailError(null)
     setOmittedCount(0)
+    if (selectedId) setLoadingDetail(true)
+  }
+
+  useEffect(() => {
+    if (!selectedId) return
+    let cancelled = false
     window.cockpit.archive
       .readSession({ sessionId: selectedId })
       .then((result) => {
