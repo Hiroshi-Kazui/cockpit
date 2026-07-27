@@ -10,30 +10,19 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
+  archivedTranscriptPath,
   cleanupFakeClaudeTranscripts,
   closeApp,
+  focusPaneTerminal,
   launchApp,
+  readPaneTerminalText,
+  rmDirWithRetry,
   useFakeClaude,
   type LaunchedApp
 } from './fixtures/electronApp'
 
 const PANE_HEADER_FOLDER_BUTTON = 'button:has-text("フォルダ選択")'
 const PANE_HEADER_NEW_SESSION_BUTTON = 'button:has-text("＋ 新規セッション")'
-
-async function focusPaneTerminal(
-  page: import('@playwright/test').Page,
-  index: number
-): Promise<void> {
-  await expect
-    .poll(
-      async () => {
-        await page.locator('.pane-terminal').nth(index).click({ force: true })
-        return page.evaluate(() => document.activeElement?.className ?? null)
-      },
-      { timeout: 5000, message: `expected pane ${index}'s xterm textarea to receive DOM focus` }
-    )
-    .toBe('xterm-helper-textarea')
-}
 
 test.describe('archive output-destination mirroring (M6, spec §4.4.1)', () => {
   test('output root configured -> session mirrored -> destination lost -> error shown, spool intact -> recovers', async () => {
@@ -106,9 +95,13 @@ test.describe('archive output-destination mirroring (M6, spec §4.4.1)', () => {
           'utf-8'
         )
         expect(mirroredTranscript).toContain(purposeText)
+        // R-1 requires the discarded machine-noise line to be absent from the *mirror output* specifically,
+        // not merely inferred transitively from `mirroredTranscript === spoolTranscript` below (fake-claude
+        // emits one `attachment.type:"hook_success"` noise line before any human turn -- see fake-claude.js).
+        expect(mirroredTranscript).not.toContain('hook_success')
 
         const spoolTranscript = fs.readFileSync(
-          path.join(launched!.userDataDir, 'archive', sessionId, 'transcript.jsonl'),
+          archivedTranscriptPath(launched!.userDataDir, sessionId),
           'utf-8'
         )
         expect(mirroredTranscript).toBe(spoolTranscript)
@@ -125,10 +118,17 @@ test.describe('archive output-destination mirroring (M6, spec §4.4.1)', () => {
         await focusPaneTerminal(page, 0)
         await page.keyboard.type('message while the mirror destination is broken')
         await page.keyboard.press('Enter')
-        // The claude dialogue itself is completely unaffected by the mirror failure (D-2/D-5).
-        await expect(page.locator('.pane-terminal').nth(0)).toContainText('了解しました', {
-          timeout: 10_000
-        })
+        // The claude dialogue itself is completely unaffected by the mirror failure (D-2/D-5). Reads
+        // xterm's own buffer (via the E2E-only `window.__cockpitTestHooks` observation point, see
+        // usePtyPane.ts/terminalProbe.ts) rather than `.pane-terminal`'s `textContent`, which the canvas
+        // renderer never populates. Asserts the reply text specific to *this* message, not just the shared
+        // "了解しました" prefix already sitting in scrollback from the session's earlier startup/turns.
+        await expect
+          .poll(() => readPaneTerminalText(page, 0), {
+            timeout: 10_000,
+            message: 'ミラー先破損中のメッセージへの応答がターミナルに表示されるまで待機'
+          })
+          .toContain('了解しました（フェイク応答）: message while the mirror destination is broken')
 
         await expect(page.locator('.status-bar__mirror--error')).toBeVisible({ timeout: 20_000 })
 
@@ -138,12 +138,9 @@ test.describe('archive output-destination mirroring (M6, spec §4.4.1)', () => {
           .poll(
             () =>
               fs
-                .readFileSync(
-                  path.join(launched!.userDataDir, 'archive', sessionId, 'transcript.jsonl'),
-                  'utf-8'
-                )
+                .readFileSync(archivedTranscriptPath(launched!.userDataDir, sessionId), 'utf-8')
                 .includes('message while the mirror destination is broken'),
-            { timeout: 10_000 }
+            { timeout: 10_000, message: 'スプールに新しいメッセージが追記されるまで待機' }
           )
           .toBe(true)
       })
@@ -191,9 +188,15 @@ test.describe('archive output-destination mirroring (M6, spec §4.4.1)', () => {
         await focusPaneTerminal(page, 0)
         await page.keyboard.type('message while output root is B')
         await page.keyboard.press('Enter')
-        await expect(page.locator('.pane-terminal').nth(0)).toContainText('了解しました', {
-          timeout: 10_000
-        })
+        // Reads xterm's own buffer (via the E2E-only `window.__cockpitTestHooks` observation point,
+        // usePtyPane.ts/terminalProbe.ts) rather than `.pane-terminal`'s `textContent`, which the canvas
+        // renderer never populates. Asserts the reply text specific to *this* message.
+        await expect
+          .poll(() => readPaneTerminalText(page, 0), {
+            timeout: 10_000,
+            message: '出力先B設定時のメッセージへの応答がターミナルに表示されるまで待機'
+          })
+          .toContain('了解しました（フェイク応答）: message while output root is B')
         await expect
           .poll(() => fs.existsSync(path.join(mirrorRootB, sessionId, 'transcript.jsonl')), {
             timeout: 20_000
@@ -222,9 +225,15 @@ test.describe('archive output-destination mirroring (M6, spec §4.4.1)', () => {
         await focusPaneTerminal(page, 0)
         await page.keyboard.type('message after switching back to A')
         await page.keyboard.press('Enter')
-        await expect(page.locator('.pane-terminal').nth(0)).toContainText('了解しました', {
-          timeout: 10_000
-        })
+        // Reads xterm's own buffer (via the E2E-only `window.__cockpitTestHooks` observation point,
+        // usePtyPane.ts/terminalProbe.ts) rather than `.pane-terminal`'s `textContent`, which the canvas
+        // renderer never populates. Asserts the reply text specific to *this* message.
+        await expect
+          .poll(() => readPaneTerminalText(page, 0), {
+            timeout: 10_000,
+            message: '出力先A復帰後のメッセージへの応答がターミナルに表示されるまで待機'
+          })
+          .toContain('了解しました（フェイク応答）: message after switching back to A')
         await expect
           .poll(
             () =>
@@ -236,11 +245,19 @@ test.describe('archive output-destination mirroring (M6, spec §4.4.1)', () => {
           .toBe(true)
       })
     } finally {
-      if (launched) await closeApp(launched)
-      fs.rmSync(scratchCwd, { recursive: true, force: true })
-      fs.rmSync(mirrorRoot, { recursive: true, force: true })
-      if (mirrorRootB) fs.rmSync(mirrorRootB, { recursive: true, force: true })
-      cleanupFakeClaudeTranscripts()
+      // Wrapped in its own try/catch so a cleanup failure (e.g. a Windows directory-lock race that outlasts
+      // `rmDirWithRetry`'s retry window) is logged rather than replacing/hiding whatever assertion failure
+      // the `try` block above may have thrown -- per JS semantics, a `finally` block that itself throws
+      // discards the original error.
+      try {
+        if (launched) await closeApp(launched)
+        await rmDirWithRetry(scratchCwd)
+        await rmDirWithRetry(mirrorRoot)
+        if (mirrorRootB) await rmDirWithRetry(mirrorRootB)
+        cleanupFakeClaudeTranscripts()
+      } catch (cleanupErr) {
+        console.error('post-test cleanup failed:', cleanupErr)
+      }
     }
   })
 })
@@ -288,8 +305,12 @@ test.describe('archive output settings dialog: opener-based focus restore (M7 fo
       await expect(page.locator('.archive-output-settings')).toHaveCount(0)
       await expect(mirrorIndicator).toBeFocused()
     } finally {
-      if (launched) await closeApp(launched)
-      fs.rmSync(mirrorRoot, { recursive: true, force: true })
+      try {
+        if (launched) await closeApp(launched)
+        await rmDirWithRetry(mirrorRoot)
+      } catch (cleanupErr) {
+        console.error('post-test cleanup failed:', cleanupErr)
+      }
     }
   })
 })

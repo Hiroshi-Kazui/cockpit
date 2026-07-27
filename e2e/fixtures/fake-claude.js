@@ -108,6 +108,29 @@ async function runInteractiveMode() {
   const transcriptPath = path.join(transcriptDir, `${sessionId}.jsonl`)
   fs.writeFileSync(transcriptPath, '', 'utf-8')
 
+  // M10 E2E coverage (spec §4.4/ADR-0011): before any human turn, emit one machine-generated-noise
+  // `attachment`/`hook_success` line (a realistic shape: a PostToolUse hook's completion echo) -- one of
+  // the shapes shared/archiveRetention.ts's shouldRetainLine discards -- so app.spec.ts can assert the
+  // app-managed archive never contains a `hook_success` attachment, distinct from the human/assistant
+  // turns below (which the same archive is expected to retain).
+  appendTranscriptLine(transcriptPath, {
+    type: 'attachment',
+    uuid: crypto.randomUUID(),
+    attachment: { type: 'hook_success', hookName: 'PostToolUse', durationMs: 12 },
+    timestamp: new Date().toISOString()
+  })
+
+  // M10 E2E coverage, the retained counterpart to the discarded line above (D-3a): `queued_command` is the
+  // one `attachment` type shouldRetainLine deliberately does NOT discard, since it is the only record of a
+  // human interrupting a running agent turn. Emitted here so app.spec.ts can assert both directions of the
+  // retention policy against one real transcript, not just the discard side.
+  appendTranscriptLine(transcriptPath, {
+    type: 'attachment',
+    uuid: crypto.randomUUID(),
+    attachment: { type: 'queued_command', command: '/compact' },
+    timestamp: new Date().toISOString()
+  })
+
   function sendStatusLine(usedPercentage) {
     invokeStatusLine(statusLineCommand, {
       session_id: sessionId,

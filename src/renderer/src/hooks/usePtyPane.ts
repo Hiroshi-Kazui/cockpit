@@ -6,6 +6,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { CanvasAddon } from '@xterm/addon-canvas'
 import type { PaneIndex } from '@shared/ipc'
+import { registerPaneTerminal } from '../testing/terminalProbe'
 
 export interface UsePtyPaneResult {
   containerRef: RefObject<HTMLDivElement>
@@ -57,6 +58,12 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     termRef.current = term
     fitAddonRef.current = fitAddon
 
+    // E2E-only observation point (no production behavior change) -- registers this pane's live xterm.js
+    // Terminal instance with the central per-pane test-probe registry, mirroring Pane.tsx's
+    // register/`null`-unregister pattern for onRegisterFocus (see testing/terminalProbe.ts for why this
+    // exists and how Playwright reads it back). Unregistered in this effect's cleanup below.
+    registerPaneTerminal(paneIndex, term)
+
     // The canvas renderer (loaded lazily below) measures the terminal's pixel dimensions when it
     // activates; activating it -- or calling fit() -- while the container still has zero layout size
     // leaves the render service without `dimensions`, so a later scroll/resize/write throws
@@ -98,6 +105,7 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
       dataDisposable.dispose()
       resizeDisposable.dispose()
       resizeObserver.disconnect()
+      registerPaneTerminal(paneIndex, null)
       term.dispose()
       termRef.current = null
       fitAddonRef.current = null
