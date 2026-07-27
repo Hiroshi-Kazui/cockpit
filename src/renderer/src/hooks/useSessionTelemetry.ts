@@ -5,9 +5,17 @@ import type { PaneIndex, SessionSummary } from '@shared/ipc'
 
 export function useSessionTelemetry(paneIndex: PaneIndex): SessionSummary | null {
   const [summary, setSummary] = useState<SessionSummary | null>(null)
+  const [trackedPane, setTrackedPane] = useState(paneIndex)
+
+  // Switching panes invalidates the previous pane's summary. Adjusting during render (rather than in
+  // an effect) drops it in the same commit as the pane change, so no frame ever shows pane A's
+  // telemetry under pane B's label.
+  if (trackedPane !== paneIndex) {
+    setTrackedPane(paneIndex)
+    setSummary(null)
+  }
 
   useEffect(() => {
-    setSummary(null)
     const unsubscribe = window.cockpit.session.onUpdated((next) => {
       if (next.pane === paneIndex) setSummary(next)
     })

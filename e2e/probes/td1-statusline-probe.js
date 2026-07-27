@@ -66,7 +66,7 @@ async function main() {
   // this probe's output is independently verifiable from the probe's own RESULT block, without relying on
   // a separate manual `claude --version` transcript. This is a plain --version invocation, not a chat
   // message -- it does not touch the pty/TUI session spawned below.
-  let claudeVersion = 'unknown'
+  let claudeVersion
   try {
     const { execFileSync } = require('node:child_process')
     claudeVersion = execFileSync(claudePath, ['--version'], { encoding: 'utf-8' }).trim()
@@ -83,7 +83,7 @@ async function main() {
   // verifiable from a single probe run's RESULT block, without relying on a separately-captured file
   // snapshot. Never silently swallowed: absence/parse failure is reported as an explicit "unavailable"
   // reason, not omitted.
-  let cacheVersion = 'unavailable (not checked yet)'
+  let cacheVersion
   try {
     const cachePath = path.join(os.homedir(), '.claude', 'statusline-cache.json')
     const cacheRaw = fs.readFileSync(cachePath, 'utf-8')
