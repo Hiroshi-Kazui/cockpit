@@ -214,6 +214,39 @@ describe('PtyManager respawn generation guard', () => {
     })
   })
 
+  // FIX M3 (review iter1, M11): repoSync.ts's busy-pane check must compare against the cwd a pane's pty
+  // was *actually spawned with*, not a re-lookup of pane_settings.default_cwd (which can drift after
+  // spawn, TD-7's own warning).
+  describe('getRunningCwd (FIX M3, review iter1)', () => {
+    it('returns null for a pane with no running pty', () => {
+      expect(manager.getRunningCwd(0)).toBeNull()
+    })
+
+    it('returns the cwd the pane was actually spawned with', () => {
+      manager.spawn(0, 'C:\\repo\\sub')
+      expect(manager.getRunningCwd(0)).toBe('C:\\repo\\sub')
+    })
+
+    it('returns null again after the pane is killed', () => {
+      manager.spawn(0, 'C:\\repo')
+      manager.kill(0)
+      expect(manager.getRunningCwd(0)).toBeNull()
+    })
+
+    it('reflects the new cwd after a respawn, not the previous one', () => {
+      manager.spawn(0, 'C:\\repo-old')
+      manager.spawn(0, 'C:\\repo-new')
+      expect(manager.getRunningCwd(0)).toBe('C:\\repo-new')
+    })
+
+    it('tracks cwds independently per pane', () => {
+      manager.spawn(0, 'C:\\repo-a')
+      manager.spawn(1, 'C:\\repo-b')
+      expect(manager.getRunningCwd(0)).toBe('C:\\repo-a')
+      expect(manager.getRunningCwd(1)).toBe('C:\\repo-b')
+    })
+  })
+
   // Netskope (and similar corporate TLS agents) can leave NODE_EXTRA_CA_CERTS pointing at a cert file
   // that no longer exists, making the child claude print a noisy "Ignoring extra certs ... No such
   // file or directory" warning into the pane on every launch. spawn() must drop that stale variable

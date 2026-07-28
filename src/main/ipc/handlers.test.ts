@@ -58,7 +58,11 @@ function makeFakePurposeCoordinator(): PurposeCoordinator & {
   resumeSession: ReturnType<typeof vi.fn>
 } {
   return {
-    startNewSession: vi.fn((): PaneLaunchStartResult => ({ pid: 111, purposeId: 'purpose-1' })),
+    // M11: startNewSession is now async (awaits the git working-tree sync, purposeCoordinator.ts) and its
+    // result always carries a repoSync outcome.
+    startNewSession: vi.fn((): Promise<PaneLaunchStartResult> =>
+      Promise.resolve({ pid: 111, purposeId: 'purpose-1', repoSync: { kind: 'not-a-repo' } })
+    ),
     resumeSession: vi.fn((): PaneLaunchResumeResult => ({ pid: 222 }))
   } as unknown as PurposeCoordinator & {
     startNewSession: ReturnType<typeof vi.fn>
@@ -134,44 +138,44 @@ describe('paneLaunchStart/paneLaunchResume isRunning guard (M4 FIX iter3 #5)', (
     registeredHandlers.clear()
   })
 
-  it('rejects paneLaunchStart when the pane already has a running pty, without calling startNewSession', () => {
+  it('rejects paneLaunchStart when the pane already has a running pty, without calling startNewSession', async () => {
     const { purposeCoordinator } = setup(() => true)
     const handler = registeredHandlers.get(IpcChannels.paneLaunchStart)
     expect(handler).toBeDefined()
     const req: PaneLaunchStartRequest = { pane: 0, cwd: 'C:\\repo', purposeText: '目的テキスト' }
 
-    expect(() => handler?.(undefined, req)).toThrow(/already has a running claude process/)
+    await expect(handler?.(undefined, req)).rejects.toThrow(/already has a running claude process/)
     expect(purposeCoordinator.startNewSession).not.toHaveBeenCalled()
   })
 
-  it('allows paneLaunchStart through to startNewSession when the pane has no running pty', () => {
+  it('allows paneLaunchStart through to startNewSession when the pane has no running pty', async () => {
     const { purposeCoordinator } = setup(() => false)
     const handler = registeredHandlers.get(IpcChannels.paneLaunchStart)
     const req: PaneLaunchStartRequest = { pane: 0, cwd: 'C:\\repo', purposeText: '目的テキスト' }
 
-    const result = handler?.(undefined, req)
+    const result = await handler?.(undefined, req)
 
-    expect(result).toEqual({ pid: 111, purposeId: 'purpose-1' })
+    expect(result).toEqual({ pid: 111, purposeId: 'purpose-1', repoSync: { kind: 'not-a-repo' } })
     expect(purposeCoordinator.startNewSession).toHaveBeenCalledWith(0, 'C:\\repo', '目的テキスト')
   })
 
-  it('allows an empty purposeText through to startNewSession (spec §4.2: 目的テキストの入力は任意)', () => {
+  it('allows an empty purposeText through to startNewSession (spec §4.2: 目的テキストの入力は任意)', async () => {
     const { purposeCoordinator } = setup(() => false)
     const handler = registeredHandlers.get(IpcChannels.paneLaunchStart)
     const req: PaneLaunchStartRequest = { pane: 0, cwd: 'C:\\repo', purposeText: '' }
 
-    const result = handler?.(undefined, req)
+    const result = await handler?.(undefined, req)
 
-    expect(result).toEqual({ pid: 111, purposeId: 'purpose-1' })
+    expect(result).toEqual({ pid: 111, purposeId: 'purpose-1', repoSync: { kind: 'not-a-repo' } })
     expect(purposeCoordinator.startNewSession).toHaveBeenCalledWith(0, 'C:\\repo', '')
   })
 
-  it('rejects a non-string purposeText', () => {
+  it('rejects a non-string purposeText', async () => {
     setup(() => false)
     const handler = registeredHandlers.get(IpcChannels.paneLaunchStart)
     const req = { pane: 0, cwd: 'C:\\repo', purposeText: null } as unknown as PaneLaunchStartRequest
 
-    expect(() => handler?.(undefined, req)).toThrow(/Invalid purposeText/)
+    await expect(handler?.(undefined, req)).rejects.toThrow(/Invalid purposeText/)
   })
 
   it('rejects paneLaunchResume when the pane already has a running pty, without calling resumeSession', () => {
@@ -192,6 +196,103 @@ describe('paneLaunchStart/paneLaunchResume isRunning guard (M4 FIX iter3 #5)', (
 
     expect(result).toEqual({ pid: 222 })
     expect(purposeCoordinator.resumeSession).toHaveBeenCalledWith(1, 'C:\\repo')
+  })
+})
+
+// FIX M10 (review iter1, M11): paneLaunchStart is now async (awaits the git working-tree sync, which can
+// take up to ~30s, D-8) -- ptyManager.isRunning(pane) alone stays false for that whole window, so a
+// TOCTOU gap existed for a second concurrent call targeting the *same pane*. handlers.ts now also tracks
+// in-flight launches per pane and rejects a second one immediately.
+describe('paneLaunchStart in-flight guard (M10, review iter1)', () => {
+  beforeEach(() => {
+    unregisterIpcHandlers()
+    registeredHandlers.clear()
+  })
+
+  it('rejects a second concurrent paneLaunchStart for the same pane while the first is still in flight, without calling startNewSession again', async () => {
+    const { purposeCoordinator } = setup(() => false)
+    // A manually-resolvable Promise<PaneLaunchStartResult>, as a plain object rather than a `let`
+    // reassigned from inside the executor closure -- avoids a TypeScript CFA quirk that narrows a
+    // closure-reassigned `let` to `never` at the read site (reproduced in isolation while writing this).
+    const box: { resolve: ((result: PaneLaunchStartResult) => void) | null } = { resolve: null }
+    purposeCoordinator.startNewSession.mockImplementation(
+      () =>
+        new Promise<PaneLaunchStartResult>((resolve) => {
+          box.resolve = resolve
+        })
+    )
+    const handler = registeredHandlers.get(IpcChannels.paneLaunchStart)
+    const req: PaneLaunchStartRequest = { pane: 0, cwd: 'C:\\repo', purposeText: '目的テキスト' }
+
+    const firstPromise = handler?.(undefined, req)
+    // Let the handler's own microtasks run through the synchronous check-and-add, without letting
+    // startNewSession's promise (still pending on the manually-controlled resolver above) settle.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    await expect(handler?.(undefined, req)).rejects.toThrow(
+      /launch is already in progress|already has/
+    )
+    expect(purposeCoordinator.startNewSession).toHaveBeenCalledTimes(1)
+
+    box.resolve?.({ pid: 111, purposeId: 'purpose-1', repoSync: { kind: 'not-a-repo' } })
+    await firstPromise
+  })
+
+  it('allows a new paneLaunchStart for the same pane once the previous one has completed', async () => {
+    const { purposeCoordinator } = setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.paneLaunchStart)
+    const req: PaneLaunchStartRequest = { pane: 0, cwd: 'C:\\repo', purposeText: '目的テキスト' }
+
+    await handler?.(undefined, req)
+    await handler?.(undefined, req)
+
+    expect(purposeCoordinator.startNewSession).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not block a concurrent paneLaunchStart for a *different* pane', async () => {
+    const { purposeCoordinator } = setup(() => false)
+    const box: { resolve: ((result: PaneLaunchStartResult) => void) | null } = { resolve: null }
+    purposeCoordinator.startNewSession.mockImplementationOnce(
+      () =>
+        new Promise<PaneLaunchStartResult>((resolve) => {
+          box.resolve = resolve
+        })
+    )
+    const handler = registeredHandlers.get(IpcChannels.paneLaunchStart)
+
+    const firstPromise = handler?.(undefined, {
+      pane: 0,
+      cwd: 'C:\\repo-a',
+      purposeText: ''
+    } as PaneLaunchStartRequest)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const secondResult = await handler?.(undefined, {
+      pane: 1,
+      cwd: 'C:\\repo-b',
+      purposeText: ''
+    } as PaneLaunchStartRequest)
+
+    expect(secondResult).toEqual({
+      pid: 111,
+      purposeId: 'purpose-1',
+      repoSync: { kind: 'not-a-repo' }
+    })
+
+    box.resolve?.({ pid: 222, purposeId: 'purpose-2', repoSync: { kind: 'not-a-repo' } })
+    await firstPromise
+  })
+
+  it('releases the in-flight guard even when startNewSession rejects, so a retry is allowed', async () => {
+    const { purposeCoordinator } = setup(() => false)
+    purposeCoordinator.startNewSession.mockRejectedValueOnce(new Error('boom'))
+    const handler = registeredHandlers.get(IpcChannels.paneLaunchStart)
+    const req: PaneLaunchStartRequest = { pane: 0, cwd: 'C:\\repo', purposeText: '' }
+
+    await expect(handler?.(undefined, req)).rejects.toThrow('boom')
+
+    const result = await handler?.(undefined, req)
+    expect(result).toEqual({ pid: 111, purposeId: 'purpose-1', repoSync: { kind: 'not-a-repo' } })
   })
 })
 

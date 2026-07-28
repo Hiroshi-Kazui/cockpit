@@ -136,6 +136,18 @@ export function registerIpcHandlers(
   spoolRoot: string,
   mirrorControl: MirrorControlPort
 ): void {
+  // FIX M10 (review iter1, M11): paneLaunchStart's isRunning guard alone is a TOCTOU gap now that
+  // startNewSession is async (it awaits the git working-tree sync, which can take up to ~30s, D-8) --
+  // `ptyManager.isRunning(pane)` stays false for that whole window (spawn only happens once prepareRepo
+  // resolves), so a second paneLaunchStart call for the *same pane* while the first is still in flight
+  // would previously sail straight through this handler's isRunning check and start a second, concurrent
+  // git-sync/spawn attempt for the pane. Pane.tsx's own `launching` state already disables the button for
+  // this whole window (renderer-side UX), but M4 FIX iter3 (code #5)'s original intent was a Main-side
+  // boundary guard that does not rely on the renderer alone -- this restores that for the async case.
+  // Scoped per registerIpcHandlers() call (recreated on every real app start and every test setup) rather
+  // than module-level, so it never leaks state across tests or app restarts.
+  const paneLaunchesInFlight = new Set<number>()
+
   ipcMain.handle(IpcChannels.ptyWrite, (_event, req: PtyWriteRequest): void => {
     assertPane(req.pane)
     if (typeof req.data !== 'string') {
@@ -233,7 +245,10 @@ export function registerIpcHandlers(
 
   ipcMain.handle(
     IpcChannels.paneLaunchStart,
-    (_event, req: PaneLaunchStartRequest): PaneLaunchStartResult => {
+    // M11 (spec §4.2 addendum, ADR-0013): async because startNewSession now awaits the git working-tree
+    // sync before spawning (purposeCoordinator.ts). No sync-order/git logic lives here -- this handler
+    // only validates and dispatches, per handlers.ts's existing convention.
+    async (_event, req: PaneLaunchStartRequest): Promise<PaneLaunchStartResult> => {
       assertPane(req.pane)
       assertNonEmptyString(req.cwd, 'cwd')
       assertString(req.purposeText, 'purposeText')
@@ -248,7 +263,20 @@ export function registerIpcHandlers(
           `Pane ${req.pane} already has a running claude process; stop it before starting a new session`
         )
       }
-      return purposeCoordinator.startNewSession(req.pane, req.cwd, req.purposeText)
+      // FIX M10 (review iter1): check-and-add happens synchronously (no `await` in between), so two
+      // paneLaunchStart calls for the same pane arriving in the same tick can never both pass this check
+      // -- Node's single-threaded event loop guarantees whichever ipcMain.handle callback body runs first
+      // claims the pane before the other one's callback body even starts (same atomicity argument as
+      // repoSyncLock.ts's holderPane/withLock pair).
+      if (paneLaunchesInFlight.has(req.pane)) {
+        throw new Error(`Pane ${req.pane} already has a new-session launch in progress`)
+      }
+      paneLaunchesInFlight.add(req.pane)
+      try {
+        return await purposeCoordinator.startNewSession(req.pane, req.cwd, req.purposeText)
+      } finally {
+        paneLaunchesInFlight.delete(req.pane)
+      }
     }
   )
 

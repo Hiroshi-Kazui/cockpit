@@ -228,6 +228,75 @@ body {
   font-size: 12px;
 }
 
+/* M11 (spec §4.2 addendum, ADR-0013, R-7): shown for the whole paneLaunch.start/resume round-trip while
+   git-sync work may still be running -- deliberately neutral (accent, not warning/error) since it merely
+   reports "in progress", not a problem.
+   FIX minor-C (review iter2): shares `min-height` with .pane-repo-sync below (which additionally holds a
+   button, making its natural height slightly taller) so swapping between the two as a launch completes
+   (this row disappears, that one can appear) never itself shifts the terminal below by a pixel or two. */
+.pane-launch-status {
+  min-height: 24px;
+  padding: 4px 8px;
+  background: rgba(0, 122, 204, 0.12);
+  color: #7fc4f2;
+  font-size: 11px;
+}
+
+/* M11 (spec §4.2 addendum, ADR-0013, R-8): the notification row for every RepoSyncOutcome kind that
+   isn't already covered by a native alert (blocked-dirty/blocked-busy) -- neutral by default (a same-
+   branch pull, a skip, "not a repo"), switching to the .pane-error-like treatment only for `failed`.
+   FIX M8 (review iter1): single-line by default (flex row + truncated text span) so a multi-line
+   blocked-dirty message can no longer permanently steal height from the `flex: 1` terminal below it --
+   the full text is still reachable via the text span's `title` tooltip, the "詳細" toggle (which switches
+   `.pane-repo-sync__text` to the `--expanded` modifier below), or dismissed outright via "×". */
+.pane-repo-sync {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 4px 8px;
+  background: rgba(184, 184, 184, 0.08);
+  color: #b8b8b8;
+  font-size: 11px;
+}
+
+.pane-repo-sync--failed {
+  background: rgba(241, 76, 76, 0.15);
+  color: var(--error);
+}
+
+.pane-repo-sync__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-repo-sync__text--expanded {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pane-repo-sync__toggle,
+.pane-repo-sync__dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  color: inherit;
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.pane-repo-sync__dismiss {
+  padding: 1px 7px;
+  font-size: 12px;
+  line-height: 1;
+}
+
 /* Subdued warning indicator for non-fatal archive-sync issues (M2 FIX major #4) -- deliberately less
    alarming than .pane-error (which signals the pane itself is unusable): amber, lower-contrast text,
    no role="alert" (uses role="status" in Pane.tsx so it doesn't interrupt screen readers). */

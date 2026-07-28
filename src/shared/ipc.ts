@@ -198,10 +198,92 @@ export interface PaneLaunchStartRequest {
   purposeText: string
 }
 
-export interface PaneLaunchStartResult {
-  pid: number
-  purposeId: string
-}
+/** FIX B3 (review iter1): a spawn failure that happens *after* the git sync already ran must not discard
+ * that `RepoSyncOutcome` -- `pid`/`purposeId` are `null` together to signal "did not actually launch"
+ * (checked by `usePtyPane.start`'s `pid !== null` branch) while `repoSync`/`message` still carry what
+ * happened to the working tree and why the launch itself failed. This is a *resolved* result, not a
+ * rejected IPC promise, specifically because `ipcRenderer.invoke` only ever propagates a thrown error's
+ * `message` string across the process boundary (Electron does not serialize arbitrary error properties),
+ * so a thrown `LaunchFailedError`-shaped object could never actually carry `repoSync` back to the renderer
+ * -- only a resolved value can. Earlier failures (invalid pane/cwd/purposeText, an already-running pty, an
+ * in-flight launch already in progress for the pane) still reject the IPC call as before: no git sync has
+ * run yet at that point, so there is nothing to lose by staying with a plain thrown Error. */
+export type PaneLaunchStartResult =
+  | {
+      pid: number
+      purposeId: string
+      /** M11 (spec §4.2 addendum, ADR-0013): outcome of the git working-tree sync attempted before this
+       * spawn. Always present -- git never blocks the launch itself (D-2), but the renderer must always
+       * be able to tell the user what happened (or didn't), per R-8's no-silent-failure requirement. */
+      repoSync: RepoSyncOutcome
+    }
+  | { pid: null; purposeId: null; repoSync: RepoSyncOutcome; message: string }
+
+// ---- M11: git sync on new-session launch (spec §4.2 addendum, ADR-0013). Judged by
+// shared/gitSync.ts's pure planRepoSync/describeRepoSyncOutcome; executed by main/git/repoSync.ts. ----
+
+/** Outcome of the working-tree sync `PurposeCoordinator.startNewSession` attempts before spawning claude
+ * (never for "再開"/`--continue`, ADR-0013/D-1). Every variant is surfaced to the user in some form (R-8):
+ * `blocked-dirty`/`blocked-busy` via a native alert (D-9), the rest via a pane-local notification row. */
+export type RepoSyncOutcome =
+  | { kind: 'not-a-repo' }
+  | { kind: 'git-unavailable'; message: string }
+  | {
+      kind: 'blocked-dirty'
+      repoRoot: string
+      changedCount: number
+      samplePaths: string[]
+      /** The branch the session will actually start on (a session always starts, D-2/R-9 -- this outcome
+       * only ever blocks the *move*, never claude itself). describeRepoSyncOutcome uses this to say so
+       * alongside the requirement's own "commit を促す" wording (restored in review iter2 -- iter1's FIX M5
+       * had dropped it entirely while fixing a real self-contradiction, over-correcting past the literal
+       * requirement). Null for a detached HEAD. */
+      currentBranch: string | null
+    }
+  | {
+      kind: 'blocked-busy'
+      repoRoot: string
+      busyPanes: PaneIndex[]
+      /** FIX M2 (review iter2): 'running' = another pane's claude process is actually running in this repo
+       * (D-7's original concern, resolved via the live busy-pane check). 'launching' = another pane's own
+       * M11 git sync is still in flight for this repo (repoSyncLock.ts) -- its claude hasn't even started
+       * yet, so describeRepoSyncOutcome renders a distinct, accurate message ("git 同期が実行中" rather
+       * than "claude が実行中") with a "もう一度お試しください" suggestion. */
+      cause: 'running' | 'launching'
+      /** FIX B2/M6 (review iter2): whether a branch *switch* would actually have been attempted. Gates
+       * modal vs notification-row-only (repoSync.ts) -- D-7's block is unconditional (busy always blocks,
+       * reverting iter1's over-relaxation), but interrupting the user with a modal is reserved for when a
+       * `checkout` was actually going to happen; an in-place `pull` that never runs is not disruptive
+       * enough to warrant one. Always `true` for `cause: 'launching'` (the other launch's own facts aren't
+       * available yet to judge this cheaply at that point). */
+      requiresSwitch: boolean
+    }
+  | { kind: 'skipped'; reason: string }
+  // FIX minor-C (review iter1, "不正状態を型で排除"): `fromBranch` only exists on the `switched: true`
+  // branch now, so `{ switched: false, fromBranch: 'whatever' }` is no longer a representable (if
+  // never-actually-produced) state.
+  | ({
+      kind: 'synced'
+      repoRoot: string
+      branch: string
+      pulled: boolean
+      /** FIX M1 (review iter2): non-null exactly when `pulled` is false, explaining *why* pull did not run
+       * (remote not configured, upstream not configured). A branch switch can legitimately happen
+       * (`switched: true`) while pull is skipped for either reason -- reporting that combination as
+       * `skipped` (iter1's behavior) misrepresented the branch move that *did* happen as if nothing had, a
+       * self-contradiction (M1). describeRepoSyncOutcome branches its pull-skip wording on this field
+       * instead of a single hardcoded reason. */
+      pullSkippedReason: string | null
+    } & (
+      | {
+          switched: true
+          /** Branch checked out *before* the switch -- needed so describeRepoSyncOutcome can render
+           * "元→先" (acceptance R-8). Null only for a detached HEAD (nothing to name a "from" for). */
+          fromBranch: string | null
+        }
+      | { switched: false }
+    ))
+  | { kind: 'failed'; repoRoot: string; step: 'status' | 'checkout' | 'pull'; message: string }
 
 /** Renderer -> main: "再開" button pressed for a pane with an active purpose but no running pty
  * (TD-7). Spawns claude with `--continue` in the same cwd; no initial prompt is sent (the prior
