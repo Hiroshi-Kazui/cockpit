@@ -96,6 +96,67 @@ body {
   gap: 4px;
   padding: 4px;
   min-height: 0;
+  position: relative;
+}
+
+/* Draggable dividers sit over the grid gap. The element itself is an invisible ~8px grab strip; a thin
+   2px accent line (::before) fades in only on hover or during a drag, so nothing is visible until the
+   user reaches for a boundary. */
+.pane-divider {
+  position: absolute;
+  z-index: 2;
+  background: transparent;
+}
+
+.pane-divider::before {
+  content: '';
+  position: absolute;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pane-divider:hover::before,
+body.is-pane-resizing .pane-divider::before {
+  opacity: 1;
+}
+
+.pane-divider--vertical {
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+  /* Win over the horizontal divider where the two cross at the grid centre. */
+  z-index: 3;
+}
+
+.pane-divider--vertical::before {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+}
+
+.pane-divider--horizontal {
+  left: 0;
+  right: 0;
+  height: 8px;
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+.pane-divider--horizontal::before {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+body.is-pane-resizing {
+  user-select: none;
 }
 
 .pane-grid--single {

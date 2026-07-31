@@ -14,6 +14,7 @@ import {
   type AppSettings,
   type SetClaudePathRequest,
   type SetLayoutModeRequest,
+  type SetPaneGridFractionsRequest,
   type ClaudeResolveStatus,
   type PurposeSummary,
   type PlanPreset,
@@ -32,7 +33,9 @@ import {
   type SetArchiveOutputRootRequest,
   type SetArchiveOutputRootResult,
   type MirrorStatusSummary,
-  type BackfillProgressEvent
+  type BackfillProgressEvent,
+  type RetryMirrorSessionRequest,
+  type RemirrorSessionRequest
 } from '../../shared/ipc'
 import { PtyManager } from '../pty/ptyManager'
 import { resolveClaude, ClaudeResolutionError } from '../pty/resolveClaude'
@@ -42,7 +45,8 @@ import {
   getAppSettings,
   setClaudePath,
   setArchiveOutputRoot,
-  setLayoutMode
+  setLayoutMode,
+  setPaneGridFractions
 } from '../db/appSettingsRepo'
 import { isLayoutMode } from '../../shared/layout'
 import { getAllActivePurposes } from '../db/purposeRepo'
@@ -213,6 +217,16 @@ export function registerIpcHandlers(
         throw new Error(`invalid layout mode: ${String(req.layoutMode)}`)
       }
       setLayoutMode(db, req.layoutMode)
+    }
+  )
+
+  ipcMain.handle(
+    IpcChannels.appSettingsSetPaneGridFractions,
+    (_event, req: SetPaneGridFractionsRequest): void => {
+      if (typeof req.columnFraction !== 'number' || typeof req.rowFraction !== 'number') {
+        throw new Error('invalid pane grid fractions: columnFraction/rowFraction must be numbers')
+      }
+      setPaneGridFractions(db, req.columnFraction, req.rowFraction)
     }
   )
 
@@ -399,6 +413,19 @@ export function registerIpcHandlers(
       window.webContents.send(IpcChannels.archiveBackfillProgress, event)
     })
   })
+
+  ipcMain.handle(IpcChannels.archiveMirrorRetry, (_event, req: RetryMirrorSessionRequest): void => {
+    assertNonEmptyString(req.sessionId, 'sessionId')
+    mirrorControl.retrySession(req.sessionId)
+  })
+
+  ipcMain.handle(
+    IpcChannels.archiveMirrorRemirror,
+    async (_event, req: RemirrorSessionRequest): Promise<void> => {
+      assertNonEmptyString(req.sessionId, 'sessionId')
+      await mirrorControl.remirrorSession(req.sessionId)
+    }
+  )
 }
 
 export function unregisterIpcHandlers(): void {

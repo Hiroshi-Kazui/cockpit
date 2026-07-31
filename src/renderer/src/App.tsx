@@ -8,7 +8,7 @@ import {
   type PaneSetting,
   type PurposeSummary
 } from '@shared/ipc'
-import { visiblePanesForLayout, type LayoutMode } from '@shared/layout'
+import { GRID_FRACTION_DEFAULT, visiblePanesForLayout, type LayoutMode } from '@shared/layout'
 import { ArchiveOutputSettings } from './components/ArchiveOutputSettings'
 import { LayoutSwitcher } from './components/LayoutSwitcher'
 import { PaneGrid } from './components/PaneGrid'
@@ -35,6 +35,9 @@ function emptyPurposesByPane(): Record<PaneIndex, PurposeSummary | null> {
 
 export function App(): React.JSX.Element {
   const [layout, setLayout] = useState<LayoutMode>('single')
+  const [columnFraction, setColumnFraction] = useState(GRID_FRACTION_DEFAULT)
+  const [rowFraction, setRowFraction] = useState(GRID_FRACTION_DEFAULT)
+  const gridFractionsRef = useRef({ column: GRID_FRACTION_DEFAULT, row: GRID_FRACTION_DEFAULT })
   const [paneSettings, setPaneSettings] = useState<PaneSetting[]>(emptyPaneSettings())
   const [purposesByPane, setPurposesByPane] =
     useState<Record<PaneIndex, PurposeSummary | null>>(emptyPurposesByPane())
@@ -107,6 +110,23 @@ export function App(): React.JSX.Element {
       .catch((err: unknown) => setLoadError(describeError(err)))
   }, [])
 
+  const handleGridResize = useCallback((axis: 'column' | 'row', fraction: number): void => {
+    if (axis === 'column') {
+      setColumnFraction(fraction)
+      gridFractionsRef.current = { ...gridFractionsRef.current, column: fraction }
+    } else {
+      setRowFraction(fraction)
+      gridFractionsRef.current = { ...gridFractionsRef.current, row: fraction }
+    }
+  }, [])
+
+  const handleGridResizeCommit = useCallback((): void => {
+    const { column, row } = gridFractionsRef.current
+    window.cockpit.appSettings
+      .setPaneGridFractions({ columnFraction: column, rowFraction: row })
+      .catch((err: unknown) => setLoadError(describeError(err)))
+  }, [])
+
   useEffect(() => {
     window.cockpit.paneSettings
       .getAll()
@@ -115,7 +135,15 @@ export function App(): React.JSX.Element {
     // Restore the split layout the user last left the window in (persisted in app_settings).
     window.cockpit.appSettings
       .get()
-      .then((settings) => setLayout(settings.layoutMode))
+      .then((settings) => {
+        setLayout(settings.layoutMode)
+        setColumnFraction(settings.paneGridColumnFraction)
+        setRowFraction(settings.paneGridRowFraction)
+        gridFractionsRef.current = {
+          column: settings.paneGridColumnFraction,
+          row: settings.paneGridRowFraction
+        }
+      })
       .catch((err: unknown) => setLoadError(describeError(err)))
     window.cockpit.claude
       .resolveStatus()
@@ -203,6 +231,10 @@ export function App(): React.JSX.Element {
         claudeResolved={claudeStatus?.resolved ?? true}
         purposesByPane={purposesByPane}
         onRegisterFocus={registerPaneFocus}
+        columnFraction={columnFraction}
+        rowFraction={rowFraction}
+        onResize={handleGridResize}
+        onResizeCommit={handleGridResizeCommit}
       />
       <StatusBar
         display={rateLimitsDisplay}

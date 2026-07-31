@@ -55,6 +55,12 @@ export interface MirrorControlPort {
   setOutputRoot(root: string | null): void
   getStatusSummary(): MirrorStatusSummary
   startBackfill(onProgress: (event: BackfillProgressEvent) => void): Promise<void>
+  /** User-initiated retry of a single errored/sentinel-blocked row (ArchiveOutputSettings' 再試行 button):
+   * drops the row and re-baselines it so the corrected verification logic re-evaluates the session. */
+  retrySession(sessionId: string): void
+  /** User-initiated "再ミラー": discards a genuinely-diverged destination copy and re-copies the full spool
+   * from scratch (ArchiveOutputSettings' 再ミラー button). Destructive at the destination only. */
+  remirrorSession(sessionId: string): Promise<void>
 }
 
 const DEFAULT_DEBOUNCE_MS = 1000
@@ -98,6 +104,44 @@ export class MirrorCoordinator implements MirrorControlPort {
 
   getOutputRoot(): string | null {
     return this.currentRoot
+  }
+
+  /** ADR-0009 keeps *automatic* retries off for a sentinel-blocked row, but an explicit user action may
+   * clear it: drop the (session, currentRoot) row entirely and re-baseline from scratch. With no existing
+   * row, rebaselineSession adopts the destination's current content as the baseline and re-verifies it
+   * against the spool -- so a row that was blocked only by the old garbage-offset bug recovers to
+   * 'synced', while one whose destination genuinely diverged is re-flagged with an accurate message
+   * (never the misleading MAX_SAFE_INTEGER offset again). No-op while no output root is configured. */
+  retrySession(sessionId: string): void {
+    if (this.currentRoot === null) return
+    this.clearSessionTimers(sessionId)
+    this.retryDelays.delete(sessionId)
+    this.repo.delete(sessionId, this.currentRoot)
+    void this.rebaselineSession(sessionId, this.currentRoot)
+  }
+
+  /** ADR-0008/D-4 recovery for a genuinely-diverged destination: the append-only guard can never resume a
+   * destination whose content no longer matches the spool, so the only safe fix is to discard that
+   * destination copy and re-copy the full spool from byte 0. Destructive at the destination only (the
+   * authoritative spool is never touched). No-op while no output root is configured. */
+  async remirrorSession(sessionId: string): Promise<void> {
+    if (this.currentRoot === null || this.sink === null) return
+    const root = this.currentRoot
+    this.clearSessionTimers(sessionId)
+    this.retryDelays.delete(sessionId)
+    await this.sink.deleteSession(sessionId)
+    this.repo.delete(sessionId, root)
+    this.repo.upsert({
+      sessionId,
+      destRoot: root,
+      syncedBytes: 0,
+      metaSynced: false,
+      state: 'pending',
+      lastError: null,
+      updatedAt: this.now()
+    })
+    await this.runOnce(sessionId)
+    this.onStatusChanged()
   }
 
   /** Called (via main/index.ts) whenever the archiver syncs new bytes into a session's spool

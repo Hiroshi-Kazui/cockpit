@@ -38,6 +38,7 @@ export const IpcChannels = {
   appSettingsGet: 'cockpit:appSettings:get',
   appSettingsSetClaudePath: 'cockpit:appSettings:setClaudePath',
   appSettingsSetLayoutMode: 'cockpit:appSettings:setLayoutMode',
+  appSettingsSetPaneGridFractions: 'cockpit:appSettings:setPaneGridFractions',
   claudeResolveStatus: 'cockpit:claude:resolveStatus',
   sessionUpdated: 'cockpit:session:updated',
   sessionArchiveError: 'cockpit:session:archiveError',
@@ -61,7 +62,9 @@ export const IpcChannels = {
   archiveMirrorStatusGet: 'cockpit:archive:mirror-status',
   archiveMirrorStatusUpdated: 'cockpit:archive:mirrorStatusUpdated',
   archiveBackfillStart: 'cockpit:archive:backfill',
-  archiveBackfillProgress: 'cockpit:archive:backfillProgress'
+  archiveBackfillProgress: 'cockpit:archive:backfillProgress',
+  archiveMirrorRetry: 'cockpit:archive:mirror-retry',
+  archiveMirrorRemirror: 'cockpit:archive:mirror-remirror'
 } as const
 
 export type IpcChannel = (typeof IpcChannels)[keyof typeof IpcChannels]
@@ -124,6 +127,26 @@ export interface AppSettings {
   /** Persisted pane split layout (spec §4.1), restored on next launch so the window reopens with the
    * split the user last left it in. Defaults to 'single' when never set / stored value is unrecognized. */
   layoutMode: LayoutMode
+  /** Draggable-divider positions: fraction (0..1) of grid width the left column occupies (split2/split4)
+   * and of grid height the top row occupies (split4). Default 0.5, clamped (shared/layout.ts). */
+  paneGridColumnFraction: number
+  paneGridRowFraction: number
+}
+
+export interface SetPaneGridFractionsRequest {
+  columnFraction: number
+  rowFraction: number
+}
+
+/** Renderer -> main: user asked to retry one errored/sentinel-blocked mirror row (spec §4.4.1). */
+export interface RetryMirrorSessionRequest {
+  sessionId: string
+}
+
+/** Renderer -> main: user asked to re-mirror one session (discard the diverged destination copy and
+ * re-copy the full spool from scratch, spec §4.4.1). Destructive at the destination only. */
+export interface RemirrorSessionRequest {
+  sessionId: string
 }
 
 export interface SetClaudePathRequest {
