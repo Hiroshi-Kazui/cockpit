@@ -7,6 +7,10 @@
   --fg: #d4d4d4;
   --accent: #007acc;
   --error: #f14c4c;
+  /* Height of a pane header's context gauge, reserved by .pane-header whether or not the gauge is
+     currently showing, so the header's height -- and therefore the terminal's row count -- never changes
+     mid-session. See .context-gauge / .pane-info for why a mid-session row change corrupts the terminal. */
+  --pane-gauge-height: 35px;
 }
 
 * {
@@ -23,7 +27,10 @@ body,
 body {
   background: var(--bg);
   color: var(--fg);
-  font-family: -apple-system, Segoe UI, sans-serif;
+  font-family:
+    -apple-system,
+    Segoe UI,
+    sans-serif;
 }
 
 .app {
@@ -210,6 +217,9 @@ body.is-pane-resizing {
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   font-size: 12px;
+  /* Room for the context gauge (the tallest header content, and the only one that appears mid-session) is
+     reserved unconditionally, so the header never changes height and the terminal never loses a row. */
+  min-height: calc(var(--pane-gauge-height) + 8px);
 }
 
 .pane-title {
@@ -233,6 +243,22 @@ body.is-pane-resizing {
   border-radius: 4px;
   padding: 1px 6px;
   white-space: nowrap;
+}
+
+/* The pane's informational rows (.pane-launch-status / .pane-purpose / .pane-error / .pane-warning /
+   .pane-repo-sync / .pane-telemetry) all live in this one band, whose height never changes as they appear
+   and disappear. Correctness, not cosmetics: ConPTY reprints its own view of the screen on every resize and
+   still counts rows xterm.js has moved into scrollback as on-screen, so any change to a running pty's row
+   count desynchronises the two and leaves cells of other rows behind (see the rationale comment in
+   Pane.tsx). These rows were the only terminal resize cockpit itself caused.
+   Reserved height fits the two rows a running session shows continuously (.pane-purpose + .pane-telemetry,
+   ~18px each); the transient ones scroll inside the band instead of growing it. */
+.pane-info {
+  flex: 0 0 40px;
+  height: 40px;
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
 }
 
 /* M4 (spec §4.2/§4.6): the active/last-known purpose's original text, shown below the header so the
@@ -466,9 +492,17 @@ body.is-pane-resizing {
 }
 
 /* ---- M3: pane context-consumption gauge (spec §4.5, primary per-pane usage indicator) ---- */
+/* This gauge is the tallest thing the pane header ever holds (three stacked parts against a single row of
+   buttons elsewhere), and it appears only once usage data arrives -- seconds into a session. Its height is
+   therefore pinned to --pane-gauge-height, the same value .pane-header reserves unconditionally, so the
+   header cannot grow when the gauge shows up: growing it would shrink the terminal below by a row, and
+   resizing a running pty is what desynchronises ConPTY and xterm.js (see .pane-info above). The three
+   parts add up to the variable exactly (12 + 2 label, 6 + 2 border bar, 2 + 11 remaining), with explicit
+   line-heights so font metrics cannot make them overflow it. */
 .context-gauge {
   width: 140px;
   flex: 0 0 auto;
+  height: var(--pane-gauge-height);
   font-size: 10px;
 }
 
@@ -478,6 +512,7 @@ body.is-pane-resizing {
   /* Matches .pane-cwd/.pane-telemetry's contrast fix: #b8b8b8 on --bg-panel (#252526) is ~7.7:1 (WCAG
      AA), was #9d9d9d (M3 FIX iteration 2, minor #6: unify contrast across pane-header text). */
   color: #b8b8b8;
+  line-height: 12px;
   margin-bottom: 2px;
 }
 
@@ -494,6 +529,7 @@ body.is-pane-resizing {
   justify-content: flex-end;
   margin-top: 2px;
   font-size: 9px;
+  line-height: 11px;
   color: #b8b8b8;
 }
 

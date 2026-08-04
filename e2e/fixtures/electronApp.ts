@@ -134,6 +134,14 @@ export async function readPaneTerminalText(page: Page, pane: PaneIndex): Promise
   return page.evaluate((p) => window.__cockpitTestHooks?.readPaneText(p) ?? '', pane)
 }
 
+/** Pane `pane`'s live xterm.js grid size -- the size the app pushes to the pty. See testHooks.ts. */
+export async function readPaneTerminalGrid(
+  page: Page,
+  pane: PaneIndex
+): Promise<{ cols: number; rows: number } | null> {
+  return page.evaluate((p) => window.__cockpitTestHooks?.readPaneGrid(p) ?? null, pane)
+}
+
 /**
  * Clicks a pane's terminal surface until DOM focus actually lands on its xterm.js textarea. A plain
  * `.click({ force: true })` right after a layout switch is empirically flaky: xterm.js's

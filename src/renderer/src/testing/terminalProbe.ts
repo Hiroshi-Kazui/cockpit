@@ -44,5 +44,10 @@ function readPaneText(pane: PaneIndex): string {
   return lines.join('\n')
 }
 
-const hooks: CockpitTestHooks = { readPaneText }
+function readPaneGrid(pane: PaneIndex): { cols: number; rows: number } | null {
+  const term = registry[pane]
+  return term ? { cols: term.cols, rows: term.rows } : null
+}
+
+const hooks: CockpitTestHooks = { readPaneText, readPaneGrid }
 window.__cockpitTestHooks = hooks

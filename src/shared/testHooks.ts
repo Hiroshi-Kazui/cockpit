@@ -16,6 +16,12 @@ export interface CockpitTestHooks {
   /** Returns pane `pane`'s currently-rendered xterm.js buffer content (rows joined with `\n`), or `''` if
    * that pane has no terminal registered yet. */
   readPaneText: (pane: PaneIndex) => string
+  /** Returns pane `pane`'s live xterm.js grid size, or `null` if that pane has no terminal registered yet.
+   * This is what gets pushed to the pty as its window size, so it is the observable that
+   * terminal-repaint.spec.ts's row-count-constancy invariant is stated in: a running pty whose row count
+   * changes makes ConPTY and xterm.js disagree about which buffer row is which (see Pane.tsx's .pane-info
+   * rationale), so the app must never change it on its own while a session runs. */
+  readPaneGrid: (pane: PaneIndex) => { cols: number; rows: number } | null
 }
 
 declare global {

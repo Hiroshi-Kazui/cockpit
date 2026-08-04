@@ -204,6 +204,20 @@ async function runInteractiveMode() {
         continue
       }
 
+      // E2E (terminal-repaint.spec.ts): `#emit <path>` writes a UTF-8 file to the pty verbatim as ordinary
+      // scrolling output, so a spec can push its own text material (the caller owns the file; nothing about
+      // it is baked in here) through the real ConPTY and then compare xterm.js's buffer against it. Like
+      // `#paint` above, not a user turn -- no transcript or statusLine side effects.
+      const emit = /^#emit (.+)$/.exec(message)
+      if (emit) {
+        try {
+          process.stdout.write(fs.readFileSync(emit[1], 'utf-8').replace(/\r?\n/g, '\r\n'))
+        } catch (err) {
+          process.stdout.write(`\r\n#emit failed: ${err.message}\r\n`)
+        }
+        continue
+      }
+
       const timestamp = new Date().toISOString()
       appendTranscriptLine(transcriptPath, {
         type: 'user',

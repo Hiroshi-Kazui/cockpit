@@ -284,97 +284,112 @@ export function Pane({
           </button>
         )}
       </div>
-      {/* M11 (R-7): shown for the whole paneLaunch.start round-trip, which can take up to ~30s while a git
+      {/* Every informational row lives inside this one always-present, fixed-height band, and none of them
+          is a flex child of .pane any more. Rationale is a correctness one, not cosmetic: ConPTY reprints
+          its own view of the screen on every resize, and rows xterm.js has already moved into its
+          scrollback are still "on screen" for ConPTY, so *any* change to a running pty's row count makes
+          the two disagree about which buffer row is which -- the reported "縦スクロールで表示が崩れ、行頭
+          のセルに前の行の文字が残る" artifact. Measured with a real ConPTY + a real xterm.js buffer: with no
+          resize the buffer stays byte-identical to the emitted text, while a 3-row change (exactly what
+          .pane-purpose / .pane-telemetry / .pane-repo-sync appearing one after another used to cause,
+          seconds into every session) corrupts it every single run -- and reordering term.resize/pty.resize
+          does not help, because the mismatch is ConPTY's, not a race. These rows appearing and disappearing
+          was the only resize cockpit itself caused; keeping the band's height constant removes it. Rows
+          beyond the reserved height scroll inside the band (.pane-info) rather than growing it. */}
+      <div className="pane-info">
+        {/* M11 (R-7): shown for the whole paneLaunch.start round-trip, which can take up to ~30s while a git
           pull runs -- keeps the "＋ 新規セッション" affordance (disabled above) from looking merely
           unresponsive. FIX M7 (review iter1): "再開" gets its own, git-sync-free wording (R-1/D-1: "再開"
           never runs the git sync at all). */}
-      {launchKind === 'start' && (
-        <div className="pane-launch-status" role="status">
-          新規セッションを準備しています（git 同期を確認中）…
-        </div>
-      )}
-      {launchKind === 'resume' && (
-        <div className="pane-launch-status" role="status">
-          再開しています…
-        </div>
-      )}
-      {purpose && (
-        <div
-          className="pane-purpose"
-          title={
-            isAwaitingPurposeDecision
-              ? '目的は未設定です。最初の発言がこの目的として記録されます。'
-              : purpose.text || '未設定'
-          }
-        >
-          目的: {purpose.text || '未設定'}
-          {isAwaitingPurposeDecision && (
-            <span className="pane-purpose__hint"> — 最初の発言がこの目的になります</span>
-          )}
-        </div>
-      )}
-      {displayedError && (
-        <div className="pane-error" role="alert">
-          {displayedError}
-        </div>
-      )}
-      {archiveWarning && (
-        <div className="pane-warning" role="status" title={archiveWarning}>
-          アーカイブ同期に問題が発生しました: {archiveWarning}
-        </div>
-      )}
-      {/* M11 (spec §4.2 addendum, ADR-0013, R-8): the git-sync outcome from the most recent "＋ 新規セッ
-          ション" launch. blocked-dirty/blocked-busy already got their own native alert dialog main-side
-          (D-9) before this ever renders -- this row is the "always visible, never blocks" record of what
-          happened (or didn't) for every outcome kind, including the ones that never show a modal.
-          FIX M8 (review iter1): a blocked-dirty's full text (repo path + every sample path, one per line)
-          previously rendered in full here, permanently stealing several lines of height from the
-          `flex: 1` terminal below it and forcing a fit()+pty.resize() reflow of the CLI's own output. Only
-          the first line is shown by default (ellipsis-truncated, full text still on `title` for a quick
-          hover); "詳細"/"閉じる" toggles the full multi-line text on demand, and "×" dismisses the row
-          entirely -- both opt-in, so the common case never grows the row past one line. */}
-      {repoSyncNotice && repoSyncFullText && (
-        <div
-          className={repoSyncIsFailed ? 'pane-repo-sync pane-repo-sync--failed' : 'pane-repo-sync'}
-          role={repoSyncIsFailed ? 'alert' : 'status'}
-        >
-          <span
-            className={
-              repoSyncExpanded
-                ? 'pane-repo-sync__text pane-repo-sync__text--expanded'
-                : 'pane-repo-sync__text'
+        {launchKind === 'start' && (
+          <div className="pane-launch-status" role="status">
+            新規セッションを準備しています（git 同期を確認中）…
+          </div>
+        )}
+        {launchKind === 'resume' && (
+          <div className="pane-launch-status" role="status">
+            再開しています…
+          </div>
+        )}
+        {purpose && (
+          <div
+            className="pane-purpose"
+            title={
+              isAwaitingPurposeDecision
+                ? '目的は未設定です。最初の発言がこの目的として記録されます。'
+                : purpose.text || '未設定'
             }
-            title={repoSyncFullText}
           >
-            {repoSyncExpanded ? repoSyncFullText : repoSyncFirstLine}
-          </span>
-          {repoSyncHasMoreLines && (
+            目的: {purpose.text || '未設定'}
+            {isAwaitingPurposeDecision && (
+              <span className="pane-purpose__hint"> — 最初の発言がこの目的になります</span>
+            )}
+          </div>
+        )}
+        {displayedError && (
+          <div className="pane-error" role="alert">
+            {displayedError}
+          </div>
+        )}
+        {archiveWarning && (
+          <div className="pane-warning" role="status" title={archiveWarning}>
+            アーカイブ同期に問題が発生しました: {archiveWarning}
+          </div>
+        )}
+        {/* M11 (spec §4.2 addendum, ADR-0013, R-8): the git-sync outcome from the most recent "＋ 新規セッ
+            ション" launch. blocked-dirty/blocked-busy already got their own native alert dialog main-side
+            (D-9) before this ever renders -- this row is the "always visible, never blocks" record of what
+            happened (or didn't) for every outcome kind, including the ones that never show a modal.
+            FIX M8 (review iter1): a blocked-dirty's full text (repo path + every sample path, one per line)
+            previously rendered in full here, permanently stealing several lines of height from the
+            `flex: 1` terminal below it. Only the first line is shown by default (ellipsis-truncated, full
+            text still on `title` for a quick hover); "詳細"/"閉じる" toggles the full multi-line text on
+            demand, and "×" dismisses the row entirely. */}
+        {repoSyncNotice && repoSyncFullText && (
+          <div
+            className={
+              repoSyncIsFailed ? 'pane-repo-sync pane-repo-sync--failed' : 'pane-repo-sync'
+            }
+            role={repoSyncIsFailed ? 'alert' : 'status'}
+          >
+            <span
+              className={
+                repoSyncExpanded
+                  ? 'pane-repo-sync__text pane-repo-sync__text--expanded'
+                  : 'pane-repo-sync__text'
+              }
+              title={repoSyncFullText}
+            >
+              {repoSyncExpanded ? repoSyncFullText : repoSyncFirstLine}
+            </span>
+            {repoSyncHasMoreLines && (
+              <button
+                type="button"
+                className="pane-repo-sync__toggle"
+                aria-expanded={repoSyncExpanded}
+                onClick={() => setRepoSyncExpanded((v) => !v)}
+              >
+                {repoSyncExpanded ? '折りたたむ' : '詳細'}
+              </button>
+            )}
             <button
               type="button"
-              className="pane-repo-sync__toggle"
-              aria-expanded={repoSyncExpanded}
-              onClick={() => setRepoSyncExpanded((v) => !v)}
+              className="pane-repo-sync__dismiss"
+              onClick={() => setRepoSyncNotice(null)}
+              aria-label="この通知を閉じる"
             >
-              {repoSyncExpanded ? '折りたたむ' : '詳細'}
+              ×
             </button>
-          )}
-          <button
-            type="button"
-            className="pane-repo-sync__dismiss"
-            onClick={() => setRepoSyncNotice(null)}
-            aria-label="この通知を閉じる"
-          >
-            ×
-          </button>
-        </div>
-      )}
-      {session && (
-        <div className="pane-telemetry">
-          session: {session.id.slice(0, 12)} | model: {session.model ?? '(unknown)'} | tokens
-          in/out: {session.tokensIn}/{session.tokensOut}
-          {session.endedAt !== null ? ' | ended' : ''}
-        </div>
-      )}
+          </div>
+        )}
+        {session && (
+          <div className="pane-telemetry">
+            session: {session.id.slice(0, 12)} | model: {session.model ?? '(unknown)'} | tokens
+            in/out: {session.tokensIn}/{session.tokensOut}
+            {session.endedAt !== null ? ' | ended' : ''}
+          </div>
+        )}
+      </div>
       <div className="pane-terminal-wrap">
         <div className="pane-terminal" ref={containerRef} />
         {/* M4 FIX (usability #3, TD-7): a running pane's black-and-empty terminal was previously the
