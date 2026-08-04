@@ -24,6 +24,7 @@ import {
 } from './db/purposeRepo'
 import { registerIpcHandlers, unregisterIpcHandlers } from './ipc/handlers'
 import { PtyManager } from './pty/ptyManager'
+import { createPtyRecorderFromEnv } from './pty/ptyRecorder'
 import { PurposeCoordinator } from './pty/purposeCoordinator'
 import { generateTitle } from './pty/titleGenerator'
 import { createPrepareRepo } from './git/repoSyncDeps'
@@ -287,7 +288,10 @@ function createWindow(): void {
       }
     },
     getClaudePathOverride: () => getAppSettings(db).claudePath,
-    prepareTelemetry: createTelemetryLaunchPreparer(pipeName)
+    prepareTelemetry: createTelemetryLaunchPreparer(pipeName),
+    // Off unless COCKPIT_PTY_LOG_DIR is set (ptyRecorder.ts) -- the diagnostic hook for reproducing
+    // terminal-rendering artifacts from a real session's raw stream.
+    recorder: createPtyRecorderFromEnv(process.env)
   })
   ptyManager = manager
 

@@ -47,7 +47,13 @@ export function createSpoolReader(spoolRoot: string): SpoolReader {
     async readSpoolBytes(sessionId, offset, length) {
       const dir = sessionDir(sessionId)
       if (!dir) {
-        throw new Error(`invalid session id for spool read: ${sessionId}`)
+        // M8 followup (i18n): Japanese lead sentence + original English preserved in parentheses (same
+        // convention as fsSink.ts's sessionDir/describeProbeErrno) -- reachable only via a session id that
+        // failed containment (defense-in-depth; already whitelisted upstream), but still surfaceable as
+        // `last_error` in the UI via mirrorCoordinator.ts's recordError.
+        throw new Error(
+          `スプール読み取り用のセッションIDが不正です（invalid session id for spool read: ${sessionId}）`
+        )
       }
       if (length === 0) return Buffer.alloc(0)
       const file = path.join(dir, 'transcript.jsonl')
@@ -58,9 +64,11 @@ export function createSpoolReader(spoolRoot: string): SpoolReader {
         // must be a thrown error, not a silently zero-padded buffer.
         const { bytesRead } = await handle.read(buffer, 0, length, offset)
         if (bytesRead !== length) {
+          // M8 followup (i18n): Japanese lead sentence + original English preserved in parentheses.
           throw new Error(
-            `short read from spool transcript for session ${sessionId} at ${file}: expected ${length} ` +
-              `byte(s) at offset ${offset}, got ${bytesRead} (the spool may have changed concurrently)`
+            `スプールの読み取りバイト数が不足しています（スプールが同時に変更された可能性があります）` +
+              `（short read from spool transcript for session ${sessionId} at ${file}: expected ${length} ` +
+              `byte(s) at offset ${offset}, got ${bytesRead}）`
           )
         }
         return buffer

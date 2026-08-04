@@ -8,6 +8,7 @@ import {
   type PtyKillRequest,
   type PtyDataEvent,
   type PtyExitEvent,
+  type WindowsPtyInfo,
   type PaneSetting,
   type SetPaneCwdRequest,
   type ChooseFolderResult,
@@ -56,6 +57,8 @@ export interface CockpitApi {
     kill: (req: PtyKillRequest) => Promise<void>
     onData: (listener: (event: PtyDataEvent) => void) => () => void
     onExit: (listener: (event: PtyExitEvent) => void) => () => void
+    /** How the pty is hosted on Windows, for xterm.js's `windowsPty` option (null off Windows). */
+    hostInfo: () => Promise<WindowsPtyInfo | null>
   }
   paneSettings: {
     getAll: () => Promise<PaneSetting[]>
@@ -137,7 +140,8 @@ const api: CockpitApi = {
     resize: (req) => ipcRenderer.invoke(IpcChannels.ptyResize, req),
     kill: (req) => ipcRenderer.invoke(IpcChannels.ptyKill, req),
     onData: (listener) => subscribe<PtyDataEvent>(IpcChannels.ptyData, listener),
-    onExit: (listener) => subscribe<PtyExitEvent>(IpcChannels.ptyExit, listener)
+    onExit: (listener) => subscribe<PtyExitEvent>(IpcChannels.ptyExit, listener),
+    hostInfo: () => ipcRenderer.invoke(IpcChannels.ptyHostInfo)
   },
   paneSettings: {
     getAll: () => ipcRenderer.invoke(IpcChannels.paneSettingsGetAll),
