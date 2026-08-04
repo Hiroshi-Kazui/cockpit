@@ -14,6 +14,7 @@ import {
   type AppSettings,
   type SetClaudePathRequest,
   type SetLayoutModeRequest,
+  type SetPaneGridFractionsRequest,
   type ClaudeResolveStatus,
   type SessionSummary,
   type SessionArchiveErrorEvent,
@@ -36,6 +37,8 @@ import {
   type SetArchiveOutputRootResult,
   type MirrorStatusSummary,
   type BackfillProgressEvent,
+  type RetryMirrorSessionRequest,
+  type RemirrorSessionRequest,
   type SetEvaluationEnabledRequest,
   type SetEvaluationModelRequest,
   type SetEvaluationOutputRootRequest,
@@ -65,6 +68,7 @@ export interface CockpitApi {
     get: () => Promise<AppSettings>
     setClaudePath: (req: SetClaudePathRequest) => Promise<void>
     setLayoutMode: (req: SetLayoutModeRequest) => Promise<void>
+    setPaneGridFractions: (req: SetPaneGridFractionsRequest) => Promise<void>
   }
   claude: {
     resolveStatus: () => Promise<ClaudeResolveStatus>
@@ -103,6 +107,8 @@ export interface CockpitApi {
     onMirrorStatusUpdated: (listener: (summary: MirrorStatusSummary) => void) => () => void
     startBackfill: () => Promise<void>
     onBackfillProgress: (listener: (event: BackfillProgressEvent) => void) => () => void
+    retryMirrorSession: (req: RetryMirrorSessionRequest) => Promise<void>
+    remirrorSession: (req: RemirrorSessionRequest) => Promise<void>
   }
   /** M9 (spec §2/§4.6 deferred "事後分析", ADR-0010): purpose-completion evaluation. Read-only + one
    * explicit re-run action -- there is no create/edit/delete channel here either (an evaluation row only
@@ -143,7 +149,9 @@ const api: CockpitApi = {
   appSettings: {
     get: () => ipcRenderer.invoke(IpcChannels.appSettingsGet),
     setClaudePath: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetClaudePath, req),
-    setLayoutMode: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetLayoutMode, req)
+    setLayoutMode: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetLayoutMode, req),
+    setPaneGridFractions: (req) =>
+      ipcRenderer.invoke(IpcChannels.appSettingsSetPaneGridFractions, req)
   },
   claude: {
     resolveStatus: () => ipcRenderer.invoke(IpcChannels.claudeResolveStatus)
@@ -180,7 +188,9 @@ const api: CockpitApi = {
       subscribe<MirrorStatusSummary>(IpcChannels.archiveMirrorStatusUpdated, listener),
     startBackfill: () => ipcRenderer.invoke(IpcChannels.archiveBackfillStart),
     onBackfillProgress: (listener) =>
-      subscribe<BackfillProgressEvent>(IpcChannels.archiveBackfillProgress, listener)
+      subscribe<BackfillProgressEvent>(IpcChannels.archiveBackfillProgress, listener),
+    retryMirrorSession: (req) => ipcRenderer.invoke(IpcChannels.archiveMirrorRetry, req),
+    remirrorSession: (req) => ipcRenderer.invoke(IpcChannels.archiveMirrorRemirror, req)
   },
   evaluation: {
     getForPurpose: (req) => ipcRenderer.invoke(IpcChannels.evaluationGetForPurpose, req),

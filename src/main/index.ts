@@ -26,6 +26,7 @@ import { registerIpcHandlers, unregisterIpcHandlers } from './ipc/handlers'
 import { PtyManager } from './pty/ptyManager'
 import { PurposeCoordinator } from './pty/purposeCoordinator'
 import { generateTitle } from './pty/titleGenerator'
+import { createPrepareRepo } from './git/repoSyncDeps'
 import { SessionArchiver } from './archive/archiver'
 import { EvaluationCoordinator } from './evaluation/evaluationCoordinator'
 import { runEvaluation } from './evaluation/evaluationRunner'
@@ -318,6 +319,10 @@ function createWindow(): void {
   })
 
   const purposes = new PurposeCoordinator({
+    // M11 (spec §4.2 addendum, ADR-0013): git/dialog/running-pane-lookup are all injected ports so
+    // repoSync.ts never imports PtyManager/paneSettingsRepo/Electron directly (R-6/R-7). Extracted to
+    // repoSyncDeps.ts (FIX minor-C, review iter1) -- pure wiring, no decision logic of its own.
+    prepareRepo: createPrepareRepo(manager, window),
     spawnPty: (pane, cwd, extraArgs) => manager.spawn(pane, cwd, extraArgs),
     writeToPty: (pane, data) => manager.write(pane, data),
     onPaneLaunched: (pane, cwd, origin) => coordinator.onPaneLaunched(pane, cwd, origin),

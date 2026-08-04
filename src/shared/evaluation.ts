@@ -308,11 +308,14 @@ export function parseEvaluationResult(rawOutput: string): EvaluationParseResult 
   const stress = clampScore(record['stress'])
   const commCost = clampScore(record['commCost'])
 
-  const missing: string[] = []
-  if (smoothness === null) missing.push('smoothness')
-  if (stress === null) missing.push('stress')
-  if (commCost === null) missing.push('commCost')
-  if (missing.length > 0) {
+  // Checked as one explicit disjunction (rather than via the `missing` array's length) so the compiler
+  // actually narrows all three to `number` for the success return below -- an array's length carries no
+  // type information back to the values that populated it.
+  if (smoothness === null || stress === null || commCost === null) {
+    const missing: string[] = []
+    if (smoothness === null) missing.push('smoothness')
+    if (stress === null) missing.push('stress')
+    if (commCost === null) missing.push('commCost')
     return {
       ok: false,
       reason: `評価結果に必須フィールドが欠けているか不正です: ${missing.join(', ')}`

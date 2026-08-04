@@ -4,7 +4,9 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { CanvasAddon } from '@xterm/addon-canvas'
 import type { PaneIndex } from '@shared/ipc'
+import { registerPaneTerminal } from '../testing/terminalProbe'
 
 export interface UsePtyPaneResult {
   containerRef: RefObject<HTMLDivElement>
@@ -12,8 +14,14 @@ export interface UsePtyPaneResult {
   error: string | null
   /** M4: the caller supplies *which* IPC action actually launches the pty (`paneLaunch.start` for the
    * "新規セッション" dialog flow, `paneLaunch.resume` for the "再開" flow, spec §4.2/§4.6) -- this hook
-   * only owns the xterm.js wiring/resize/focus dance that's identical either way. */
-  start: (spawnFn: () => Promise<{ pid: number }>) => Promise<void>
+   * only owns the xterm.js wiring/resize/focus dance that's identical either way.
+   * M11: returns the resolved launch result (previously discarded) so Pane.tsx can read `paneLaunch.start`'s
+   * `repoSync` outcome (spec §4.2 addendum) -- `null` if the IPC call itself rejected (error is still
+   * recorded via `error` above either way). FIX B3 (review iter1): `pid` may itself be `null` within a
+   * *resolved* result (paneLaunch.start's discriminated union, shared/ipc.ts's PaneLaunchStartResult) when
+   * the git sync ran but the spawn afterward failed -- `running`/resize/focus are only applied when
+   * `pid !== null`, but the whole result (including `repoSync`) still reaches the caller either way. */
+  start: <T extends { pid: number | null }>(spawnFn: () => Promise<T>) => Promise<T | null>
   stop: () => Promise<void>
   /** M5 (AC "キーボードでのペイン間フォーカス移動"): moves DOM focus to this pane's xterm.js terminal
    * (its hidden textarea) regardless of whether a pty is currently running -- the terminal instance is
@@ -53,9 +61,34 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.open(container)
-    fitAddon.fit()
     termRef.current = term
     fitAddonRef.current = fitAddon
+
+    // E2E-only observation point (no production behavior change) -- registers this pane's live xterm.js
+    // Terminal instance with the central per-pane test-probe registry, mirroring Pane.tsx's
+    // register/`null`-unregister pattern for onRegisterFocus (see testing/terminalProbe.ts for why this
+    // exists and how Playwright reads it back). Unregistered in this effect's cleanup below.
+    registerPaneTerminal(paneIndex, term)
+
+    // The canvas renderer (loaded lazily below) measures the terminal's pixel dimensions when it
+    // activates; activating it -- or calling fit() -- while the container still has zero layout size
+    // leaves the render service without `dimensions`, so a later scroll/resize/write throws
+    // "Cannot read properties of undefined (reading 'dimensions')" from Viewport.syncScrollArea.
+    // Defer both the CanvasAddon load and every fit() until the container actually has a non-zero
+    // size (the ResizeObserver below drives this); this also correctly delays them for a pane that
+    // starts hidden in a split layout until it first becomes visible.
+    let canvasAddon: CanvasAddon | null = null
+    const ensureRendererAndFit = (): void => {
+      if (container.clientWidth === 0 || container.clientHeight === 0) return
+      if (!canvasAddon) {
+        // Default DOM renderer reuses row elements across scroll, which can leave stale glyph/width
+        // state on the leftmost cell of a recycled row -- the canvas renderer repaints the whole
+        // buffer each frame (no per-row DOM reuse), avoiding that class of scroll artifact.
+        canvasAddon = new CanvasAddon()
+        term.loadAddon(canvasAddon)
+      }
+      fitAddon.fit()
+    }
 
     const dataDisposable = term.onData((data) => {
       if (!runningRef.current) return
@@ -71,13 +104,14 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
       })
     })
 
-    const resizeObserver = new ResizeObserver(() => fitAddon.fit())
+    const resizeObserver = new ResizeObserver(() => ensureRendererAndFit())
     resizeObserver.observe(container)
 
     return () => {
       dataDisposable.dispose()
       resizeDisposable.dispose()
       resizeObserver.disconnect()
+      registerPaneTerminal(paneIndex, null)
       term.dispose()
       termRef.current = null
       fitAddonRef.current = null
@@ -101,20 +135,28 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
   }, [paneIndex])
 
   const start = useCallback(
-    async (spawnFn: () => Promise<{ pid: number }>) => {
+    async <T extends { pid: number | null }>(spawnFn: () => Promise<T>): Promise<T | null> => {
       setError(null)
       try {
-        await spawnFn()
-        setRunning(true)
-        const term = termRef.current
-        const fitAddon = fitAddonRef.current
-        if (term && fitAddon) {
-          fitAddon.fit()
-          await window.cockpit.pty.resize({ pane: paneIndex, cols: term.cols, rows: term.rows })
+        const result = await spawnFn()
+        // FIX B3 (review iter1): `pid === null` is a resolved (not thrown) "did not actually launch"
+        // result (paneLaunch.start's discriminated union) -- the caller still gets the full result back
+        // (so it can show `repoSync`/`message`), but the terminal must not be marked running/focused for a
+        // pty that was never actually spawned.
+        if (result.pid !== null) {
+          setRunning(true)
+          const term = termRef.current
+          const fitAddon = fitAddonRef.current
+          if (term && fitAddon) {
+            fitAddon.fit()
+            await window.cockpit.pty.resize({ pane: paneIndex, cols: term.cols, rows: term.rows })
+          }
+          term?.focus()
         }
-        term?.focus()
+        return result
       } catch (err) {
         setError(describeError(err))
+        return null
       }
     },
     [paneIndex]

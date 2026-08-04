@@ -96,6 +96,67 @@ body {
   gap: 4px;
   padding: 4px;
   min-height: 0;
+  position: relative;
+}
+
+/* Draggable dividers sit over the grid gap. The element itself is an invisible ~8px grab strip; a thin
+   2px accent line (::before) fades in only on hover or during a drag, so nothing is visible until the
+   user reaches for a boundary. */
+.pane-divider {
+  position: absolute;
+  z-index: 2;
+  background: transparent;
+}
+
+.pane-divider::before {
+  content: '';
+  position: absolute;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pane-divider:hover::before,
+body.is-pane-resizing .pane-divider::before {
+  opacity: 1;
+}
+
+.pane-divider--vertical {
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+  /* Win over the horizontal divider where the two cross at the grid centre. */
+  z-index: 3;
+}
+
+.pane-divider--vertical::before {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+}
+
+.pane-divider--horizontal {
+  left: 0;
+  right: 0;
+  height: 8px;
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+.pane-divider--horizontal::before {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+}
+
+body.is-pane-resizing {
+  user-select: none;
 }
 
 .pane-grid--single {
@@ -228,6 +289,75 @@ body {
   font-size: 12px;
 }
 
+/* M11 (spec §4.2 addendum, ADR-0013, R-7): shown for the whole paneLaunch.start/resume round-trip while
+   git-sync work may still be running -- deliberately neutral (accent, not warning/error) since it merely
+   reports "in progress", not a problem.
+   FIX minor-C (review iter2): shares `min-height` with .pane-repo-sync below (which additionally holds a
+   button, making its natural height slightly taller) so swapping between the two as a launch completes
+   (this row disappears, that one can appear) never itself shifts the terminal below by a pixel or two. */
+.pane-launch-status {
+  min-height: 24px;
+  padding: 4px 8px;
+  background: rgba(0, 122, 204, 0.12);
+  color: #7fc4f2;
+  font-size: 11px;
+}
+
+/* M11 (spec §4.2 addendum, ADR-0013, R-8): the notification row for every RepoSyncOutcome kind that
+   isn't already covered by a native alert (blocked-dirty/blocked-busy) -- neutral by default (a same-
+   branch pull, a skip, "not a repo"), switching to the .pane-error-like treatment only for `failed`.
+   FIX M8 (review iter1): single-line by default (flex row + truncated text span) so a multi-line
+   blocked-dirty message can no longer permanently steal height from the `flex: 1` terminal below it --
+   the full text is still reachable via the text span's `title` tooltip, the "詳細" toggle (which switches
+   `.pane-repo-sync__text` to the `--expanded` modifier below), or dismissed outright via "×". */
+.pane-repo-sync {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 4px 8px;
+  background: rgba(184, 184, 184, 0.08);
+  color: #b8b8b8;
+  font-size: 11px;
+}
+
+.pane-repo-sync--failed {
+  background: rgba(241, 76, 76, 0.15);
+  color: var(--error);
+}
+
+.pane-repo-sync__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-repo-sync__text--expanded {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pane-repo-sync__toggle,
+.pane-repo-sync__dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  color: inherit;
+  font-size: 10px;
+  padding: 1px 6px;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.pane-repo-sync__dismiss {
+  padding: 1px 7px;
+  font-size: 12px;
+  line-height: 1;
+}
+
 /* Subdued warning indicator for non-fatal archive-sync issues (M2 FIX major #4) -- deliberately less
    alarming than .pane-error (which signals the pane itself is unusable): amber, lower-contrast text,
    no role="alert" (uses role="status" in Pane.tsx so it doesn't interrupt screen readers). */
@@ -251,6 +381,13 @@ body {
   position: absolute;
   inset: 0;
   padding: 4px;
+  /* Establish a stacking context so xterm's canvas render layers (.xterm-cursor-layer etc., which
+     carry their own z-index) stay contained here and cannot be hoisted above the sibling resume
+     overlay. Without this the transparent cursor-layer canvas paints over the "再開" button and
+     swallows mouse clicks (elementFromPoint at the button center returns CANVAS.xterm-cursor-layer,
+     so real clicks never reach the button while a programmatic .click() -- which bypasses hit
+     testing -- succeeds). */
+  z-index: 0;
 }
 
 /* M4 FIX (usability #3, TD-7): the "再開待ち" affordance shown centered over a pane's terminal area
@@ -269,6 +406,9 @@ body {
   padding: 0 18px;
   background: rgba(30, 30, 30, 0.92);
   border-radius: 4px;
+  /* Sit above .pane-terminal (which is now its own stacking context) so the "再開" button reliably
+     receives mouse clicks -- see the note on .pane-terminal above. */
+  z-index: 1;
 }
 
 .pane-resume-overlay__badge {

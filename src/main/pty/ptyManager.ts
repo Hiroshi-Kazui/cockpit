@@ -64,6 +64,11 @@ export class PtyManager {
   // entry with a new generation) causes the prior instance's late events to be dropped.
   private readonly generations = new Map<PaneIndex, number>()
   private nextGeneration = 0
+  // FIX M3 (review iter1, M11): the cwd a pane's *currently running* pty was actually spawned with --
+  // repoSync.ts's busy-pane check must compare against this, not against pane_settings.default_cwd (which
+  // can be changed by the user *after* a pty has already been spawned, TD-7's own warning about exactly
+  // this drift). Kept symmetric with `panes`/`generations`: set in spawn(), cleared in kill().
+  private readonly cwds = new Map<PaneIndex, string>()
 
   constructor(private readonly deps: PtyManagerDeps) {}
 
@@ -102,15 +107,20 @@ export class PtyManager {
     })
     proc.onExit(({ exitCode, signal }) => {
       // Only clear the map entry if it's still this exact instance (a newer spawn may already have
-      // replaced it while this exit event was in flight).
+      // replaced it while this exit event was in flight) -- `cwds` is kept symmetric with `panes` here
+      // (FIX minor-C, review iter2: previously only `panes` was cleared, leaving a stale cwd behind for a
+      // pane that had genuinely exited with no respawn pending -- harmless for getRunningCwd, which already
+      // gates on `panes.has(pane)` first, but a real staleness nonetheless).
       if (this.panes.get(pane) === proc) {
         this.panes.delete(pane)
+        this.cwds.delete(pane)
       }
       const currentGeneration = this.generations.get(pane)
       if (currentGeneration !== undefined && currentGeneration !== generation) return
       this.deps.events.onExit(pane, exitCode, signal)
     })
     this.panes.set(pane, proc)
+    this.cwds.set(pane, cwd)
     return { pid: proc.pid }
   }
 
@@ -142,6 +152,7 @@ export class PtyManager {
     // with the new generation right after calling kill(), so the guard still catches genuinely stale
     // events from the instance being replaced.
     this.generations.delete(pane)
+    this.cwds.delete(pane)
   }
 
   killAll(): void {
@@ -152,5 +163,13 @@ export class PtyManager {
 
   isRunning(pane: PaneIndex): boolean {
     return this.panes.has(pane)
+  }
+
+  /** FIX M3 (review iter1, M11): the cwd pane `pane`'s pty was actually spawned with, or null if the pane
+   * has no running pty right now. See the `cwds` field's doc comment for why this must be spawn-time truth
+   * rather than a re-lookup of pane_settings.default_cwd. */
+  getRunningCwd(pane: PaneIndex): string | null {
+    if (!this.panes.has(pane)) return null
+    return this.cwds.get(pane) ?? null
   }
 }

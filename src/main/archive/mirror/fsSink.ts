@@ -75,6 +75,11 @@ export function createFsSink(destRoot: string): ArchiveSink {
       await fs.promises.writeFile(path.join(dir, 'metadata.json'), json, 'utf-8')
     },
 
+    async deleteSession(sessionId) {
+      // rm the whole `<destRoot>/<sessionId>` folder; `force` makes a missing folder a no-op.
+      await fs.promises.rm(sessionDir(destRoot, sessionId), { recursive: true, force: true })
+    },
+
     async readTranscriptPrefix(sessionId, length) {
       if (length === 0) return Buffer.alloc(0)
       const file = path.join(sessionDir(destRoot, sessionId), 'transcript.jsonl')

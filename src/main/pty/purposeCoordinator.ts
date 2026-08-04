@@ -4,7 +4,7 @@
 // persistence, headless title generation, pushing updates to the renderer) are injected as narrow
 // function-shaped deps so this class is unit-testable without Electron/pty/SQLite -- the same
 // dependency-inversion pattern sessionCoordinator.ts uses via ports.ts.
-import type { PaneIndex, PurposeSummary } from '../../shared/ipc'
+import type { PaneIndex, PurposeSummary, RepoSyncOutcome } from '../../shared/ipc'
 import type { LaunchReadyReason } from '../../shared/launchReadiness'
 import { truncateTitle } from '../../shared/title'
 import { normalizeInitialPromptText } from '../../shared/prompt'
@@ -19,6 +19,15 @@ export interface LaunchWatcherLike {
 }
 
 export interface PurposeCoordinatorDeps {
+  /** M11 (spec §4.2 addendum, ADR-0013): runs the git working-tree sync for `cwd` before claude is
+   * spawned. Called only from startNewSession -- never from resumeSession (ADR-0013/D-1: "再開"'s
+   * `--continue` must never have its branch moved out from under it). Never rejects (repoSync.ts's
+   * prepareRepoForLaunch already catches every failure into a `{ kind: 'failed' }` outcome, R-9) and never
+   * blocks the launch indefinitely (every git call it makes carries its own timeout, D-8) -- git failing,
+   * blocking, or being absent must never prevent claude from starting (D-2). `pane` is passed through so
+   * the git-sync layer can serialize/observe concurrent same-repo launches by pane (repoSyncLock.ts,
+   * FIX M2, review iter1). */
+  prepareRepo: (pane: PaneIndex, cwd: string) => Promise<RepoSyncOutcome>
   /** Spawns claude for a pane; `extraArgs` (e.g. `['--continue']`) are appended after the app's own
    * `--settings` flag. Must throw (propagating ClaudeResolutionError) on resolution/spawn failure. */
   spawnPty: (pane: PaneIndex, cwd: string, extraArgs?: readonly string[]) => { pid: number }
@@ -85,14 +94,42 @@ export class PurposeCoordinator {
    * generate a title from yet). The purpose stays active with empty text/title -- rendered as "未設定"
    * (Pane.tsx) -- until PurposeDetectionCoordinator finds the session's first non-command chat turn and
    * calls decidePurposeFromFirstMessage below.
+   *
+   * M11 (spec §4.2 addendum, ADR-0013): the git working-tree sync runs first, *before* spawnPty -- so the
+   * existing "spawn failure leaves no orphan purpose row" ordering invariant is preserved (git prep ->
+   * spawn -> createPurpose). `prepareRepo` never rejects and never blocks indefinitely (see its doc
+   * comment on PurposeCoordinatorDeps), so this await never itself risks hanging the launch.
+   *
+   * FIX B3 (review iter1): if `spawnPty` throws *after* the git sync already ran, that `repoSync` outcome
+   * must not be discarded -- the working tree may genuinely have just been moved/pulled, and the user needs
+   * to know that even though the launch itself failed. This returns a `{ pid: null, purposeId: null,
+   * repoSync, message }` result instead of letting the exception propagate, specifically because
+   * `ipcRenderer.invoke` (handlers.ts's paneLaunchStart) only ever forwards a *thrown* error's bare message
+   * string across the Electron process boundary -- a thrown error could never actually carry `repoSync`
+   * back to the renderer, only a resolved value can (see shared/ipc.ts's PaneLaunchStartResult doc
+   * comment). Every failure *before* this point (invalid input, an already-running pty, an in-flight launch
+   * already in progress) still throws as before, at the handlers.ts/PtyManager boundary -- no git sync has
+   * run yet there, so nothing is lost by staying with a plain thrown Error.
    */
-  startNewSession(
+  async startNewSession(
     pane: PaneIndex,
     cwd: string,
     purposeText: string
-  ): { pid: number; purposeId: string } {
+  ): Promise<
+    | { pid: number; purposeId: string; repoSync: RepoSyncOutcome }
+    | { pid: null; purposeId: null; repoSync: RepoSyncOutcome; message: string }
+  > {
     const trimmedText = purposeText.trim()
-    const { pid } = this.deps.spawnPty(pane, cwd)
+    const repoSync = await this.deps.prepareRepo(pane, cwd)
+
+    let pid: number
+    try {
+      ;({ pid } = this.deps.spawnPty(pane, cwd))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[launch] pane ${pane}: spawnPty failed after git sync completed`, err)
+      return { pid: null, purposeId: null, repoSync, message }
+    }
 
     const purpose = this.deps.createPurpose(pane, trimmedText)
     this.deps.onPurposeUpdated(purpose)
@@ -103,7 +140,7 @@ export class PurposeCoordinator {
       this.generateTitleAsync(purpose, trimmedText)
     }
 
-    return { pid, purposeId: purpose.id }
+    return { pid, purposeId: purpose.id, repoSync }
   }
 
   /**

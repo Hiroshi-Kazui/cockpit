@@ -2,12 +2,14 @@
 // M6 for the archive-output mirror destination (spec §4.4.1, ADR-0008/D-6).
 import type { Database } from 'better-sqlite3'
 import type { AppSettings } from '../../shared/ipc'
-import { isLayoutMode, type LayoutMode } from '../../shared/layout'
+import { clampGridFraction, isLayoutMode, type LayoutMode } from '../../shared/layout'
 
 export const APP_SETTING_KEYS = {
   claudePath: 'claude_path',
   archiveOutputRoot: 'archive_output_root',
   layoutMode: 'layout_mode',
+  paneGridColumnFraction: 'pane_grid_column_fraction',
+  paneGridRowFraction: 'pane_grid_row_fraction',
   evaluationEnabled: 'evaluation_enabled',
   evaluationModel: 'evaluation_model',
   evaluationOutputRoot: 'evaluation_output_root'
@@ -43,6 +45,11 @@ function getLayoutMode(db: Database): LayoutMode {
   return raw !== null && isLayoutMode(raw) ? raw : 'single'
 }
 
+function getGridFraction(db: Database, key: string): number {
+  const raw = getRaw(db, key)
+  return clampGridFraction(raw === null ? Number.NaN : Number.parseFloat(raw))
+}
+
 /** Defaults to true (ON) when never set / stored value is unrecognized -- ADR-0010 D-2's "既定 ON". */
 function getEvaluationEnabled(db: Database): boolean {
   const raw = getRaw(db, APP_SETTING_KEYS.evaluationEnabled)
@@ -59,6 +66,8 @@ export function getAppSettings(db: Database): AppSettings {
     claudePath: getRaw(db, APP_SETTING_KEYS.claudePath),
     archiveOutputRoot: getRaw(db, APP_SETTING_KEYS.archiveOutputRoot),
     layoutMode: getLayoutMode(db),
+    paneGridColumnFraction: getGridFraction(db, APP_SETTING_KEYS.paneGridColumnFraction),
+    paneGridRowFraction: getGridFraction(db, APP_SETTING_KEYS.paneGridRowFraction),
     evaluationEnabled: getEvaluationEnabled(db),
     evaluationModel: getEvaluationModel(db),
     evaluationOutputRoot: getRaw(db, APP_SETTING_KEYS.evaluationOutputRoot)
@@ -86,6 +95,16 @@ export function setEvaluationOutputRoot(db: Database, root: string | null): void
 /** Persists the pane split layout so the next launch reopens with it (spec §4.1). */
 export function setLayoutMode(db: Database, mode: LayoutMode): void {
   setRaw(db, APP_SETTING_KEYS.layoutMode, mode)
+}
+
+/** Persists the draggable-divider positions (clamped before storing). */
+export function setPaneGridFractions(
+  db: Database,
+  columnFraction: number,
+  rowFraction: number
+): void {
+  setRaw(db, APP_SETTING_KEYS.paneGridColumnFraction, String(clampGridFraction(columnFraction)))
+  setRaw(db, APP_SETTING_KEYS.paneGridRowFraction, String(clampGridFraction(rowFraction)))
 }
 
 export function setClaudePath(db: Database, claudePath: string): void {

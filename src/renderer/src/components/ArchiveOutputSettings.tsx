@@ -45,6 +45,9 @@ export function ArchiveOutputSettings({
 }: ArchiveOutputSettingsProps): React.JSX.Element {
   const [actionError, setActionError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Which session (if any) is awaiting a 2nd click to confirm the destructive 再ミラー (dest copy is
+  // deleted and re-copied); null when nothing is pending confirmation.
+  const [confirmRemirror, setConfirmRemirror] = useState<string | null>(null)
   const [backfillProgress, setBackfillProgress] = useState<BackfillProgressEvent | null>(null)
   // M7 followup (UX: バックフィル開始直後の即時フィードバック欠如): true from the moment the button is
   // clicked until either the first real progress event arrives (main/index.ts's IPC push is asynchronous --
@@ -115,6 +118,37 @@ export function ArchiveOutputSettings({
     } finally {
       setBusy(false)
       setBackfillStarting(false)
+      restoreFocusIfEscaped()
+    }
+  }
+
+  // ADR-0009: a sentinel-blocked / errored row is never retried automatically -- this button is the
+  // explicit user override. Main drops the row and re-baselines it, then pushes a fresh status snapshot.
+  async function handleRetry(sessionId: string): Promise<void> {
+    setActionError(null)
+    setBusy(true)
+    try {
+      await window.cockpit.archive.retryMirrorSession({ sessionId })
+    } catch (err) {
+      setActionError(describeError(err))
+    } finally {
+      setBusy(false)
+      restoreFocusIfEscaped()
+    }
+  }
+
+  // Destructive recovery for a genuinely-diverged destination: main deletes the dest copy and re-copies
+  // the full spool from scratch. Gated behind a 2nd confirm click (confirmRemirror) since it overwrites.
+  async function handleRemirror(sessionId: string): Promise<void> {
+    setConfirmRemirror(null)
+    setActionError(null)
+    setBusy(true)
+    try {
+      await window.cockpit.archive.remirrorSession({ sessionId })
+    } catch (err) {
+      setActionError(describeError(err))
+    } finally {
+      setBusy(false)
       restoreFocusIfEscaped()
     }
   }
@@ -251,6 +285,48 @@ export function ArchiveOutputSettings({
                         {entry.lastError}
                       </span>
                     )}
+                    {entry.state === 'error' && (
+                      <button
+                        type="button"
+                        className="archive-output-settings__retry"
+                        onClick={() => void handleRetry(entry.sessionId)}
+                        disabled={busy}
+                        title="行を破棄して再照合します（宛先ファイルは変更しません）"
+                      >
+                        再試行
+                      </button>
+                    )}
+                    {entry.state === 'error' &&
+                      (confirmRemirror === entry.sessionId ? (
+                        <>
+                          <button
+                            type="button"
+                            className="archive-output-settings__retry archive-output-settings__retry--danger"
+                            onClick={() => void handleRemirror(entry.sessionId)}
+                            disabled={busy}
+                          >
+                            宛先を上書きして再コピー
+                          </button>
+                          <button
+                            type="button"
+                            className="archive-output-settings__retry"
+                            onClick={() => setConfirmRemirror(null)}
+                            disabled={busy}
+                          >
+                            取消
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          className="archive-output-settings__retry"
+                          onClick={() => setConfirmRemirror(entry.sessionId)}
+                          disabled={busy}
+                          title="宛先の壊れたコピーを削除し、スプールから全体を再コピーします"
+                        >
+                          再ミラー
+                        </button>
+                      ))}
                   </li>
                 ))}
               </ul>
