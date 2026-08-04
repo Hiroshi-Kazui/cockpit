@@ -39,7 +39,15 @@ import {
   type MirrorStatusSummary,
   type BackfillProgressEvent,
   type RetryMirrorSessionRequest,
-  type RemirrorSessionRequest
+  type RemirrorSessionRequest,
+  type SetEvaluationEnabledRequest,
+  type SetEvaluationModelRequest,
+  type SetEvaluationOutputRootRequest,
+  type SetEvaluationOutputRootResult,
+  type EvaluationGetForPurposeRequest,
+  type EvaluationRerunRequest,
+  type EvaluationSummary,
+  type EvaluationHistoryEntry
 } from '../shared/ipc'
 
 export interface CockpitApi {
@@ -104,6 +112,19 @@ export interface CockpitApi {
     onBackfillProgress: (listener: (event: BackfillProgressEvent) => void) => () => void
     retryMirrorSession: (req: RetryMirrorSessionRequest) => Promise<void>
     remirrorSession: (req: RemirrorSessionRequest) => Promise<void>
+  }
+  /** M9 (spec §2/§4.6 deferred "事後分析", ADR-0010): purpose-completion evaluation. Read-only + one
+   * explicit re-run action -- there is no create/edit/delete channel here either (an evaluation row only
+   * ever comes into existence via completePurpose's server-side trigger or this rerun call). */
+  evaluation: {
+    getForPurpose: (req: EvaluationGetForPurposeRequest) => Promise<EvaluationSummary | null>
+    listAll: () => Promise<EvaluationHistoryEntry[]>
+    rerun: (req: EvaluationRerunRequest) => Promise<void>
+    onUpdated: (listener: (summary: EvaluationSummary) => void) => () => void
+    chooseOutputRootFolder: () => Promise<ChooseFolderResult>
+    setOutputRoot: (req: SetEvaluationOutputRootRequest) => Promise<SetEvaluationOutputRootResult>
+    setEnabled: (req: SetEvaluationEnabledRequest) => Promise<void>
+    setModel: (req: SetEvaluationModelRequest) => Promise<void>
   }
 }
 
@@ -174,6 +195,16 @@ const api: CockpitApi = {
       subscribe<BackfillProgressEvent>(IpcChannels.archiveBackfillProgress, listener),
     retryMirrorSession: (req) => ipcRenderer.invoke(IpcChannels.archiveMirrorRetry, req),
     remirrorSession: (req) => ipcRenderer.invoke(IpcChannels.archiveMirrorRemirror, req)
+  },
+  evaluation: {
+    getForPurpose: (req) => ipcRenderer.invoke(IpcChannels.evaluationGetForPurpose, req),
+    listAll: () => ipcRenderer.invoke(IpcChannels.evaluationListAll),
+    rerun: (req) => ipcRenderer.invoke(IpcChannels.evaluationRerun, req),
+    onUpdated: (listener) => subscribe<EvaluationSummary>(IpcChannels.evaluationUpdated, listener),
+    chooseOutputRootFolder: () => ipcRenderer.invoke(IpcChannels.evaluationOutputRootChooseFolder),
+    setOutputRoot: (req) => ipcRenderer.invoke(IpcChannels.evaluationOutputRootSet, req),
+    setEnabled: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetEvaluationEnabled, req),
+    setModel: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetEvaluationModel, req)
   }
 }
 

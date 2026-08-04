@@ -17,6 +17,8 @@ interface PaneGridProps {
   claudeResolved: boolean
   purposesByPane: Readonly<Record<PaneIndex, PurposeSummary | null>>
   onRegisterFocus: (pane: PaneIndex, focusFn: (() => void) | null) => void
+  /** M9 FIX: forwarded straight through to each Pane -- see Pane.tsx's prop doc comment. */
+  onEvaluationDialogVisibilityChange: (pane: PaneIndex, visible: boolean) => void
   columnFraction: number
   rowFraction: number
   onResize: (axis: ResizeAxis, fraction: number) => void
@@ -31,6 +33,7 @@ export function PaneGrid({
   claudeResolved,
   purposesByPane,
   onRegisterFocus,
+  onEvaluationDialogVisibilityChange,
   columnFraction,
   rowFraction,
   onResize,
@@ -89,6 +92,7 @@ export function PaneGrid({
             claudeResolved={claudeResolved}
             purpose={purposesByPane[pane]}
             onRegisterFocus={onRegisterFocus}
+            onEvaluationDialogVisibilityChange={onEvaluationDialogVisibilityChange}
           />
         </div>
       ))}

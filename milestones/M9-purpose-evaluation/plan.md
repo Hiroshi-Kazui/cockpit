@@ -1,7 +1,7 @@
 ---
 milestone: M9
 title: 目的完了時の評価（3軸スコア・改善案・週次/月次遷移・出力先設定）
-status: draft   # draft → approved（/cockpit-build 起動 = 承認イベント）→ shipped（品質ゲート合格）
+status: shipped   # draft → approved（/cockpit-build 起動 = 承認イベント）→ shipped（品質ゲート合格）
 created: 2026-07-23
 decisions: docs/adr/0010-purpose-evaluation-pipeline.md
 ---

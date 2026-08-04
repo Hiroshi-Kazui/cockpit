@@ -1,7 +1,7 @@
 # ADR-0010: 目的完了時の評価パイプライン
 
 - 日付: 2026-07-23
-- 状態: proposed（`/cockpit-build M9` 起動＝プラン承認で accepted）
+- 状態: accepted（`/cockpit-build M9` 起動＝プラン承認）
 - 関連: spec §2 / §4.2 / §4.6 / §5、milestones/M9-purpose-evaluation/（起案元プラン）
 - 先行: ADR-0008（出力先設定のプローブ検証・silent failure 禁止の型）、TD-5（Windows spawn とインジェクション不変条件）
 

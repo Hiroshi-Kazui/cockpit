@@ -378,3 +378,62 @@ describe('migrate() -- ADR-0009 archive_mirror composite-key migration', () => {
     expect(db.tables.has('sessions')).toBe(true)
   })
 })
+
+// M9 (spec §5 evaluations table, ADR-0010): the migration is a plain `CREATE TABLE IF NOT EXISTS`, so it
+// needs no special migration logic of its own -- but AC "マイグレーションは既存DBに対して無損失・
+// idempotent" still applies and is pinned here the same way as the archive_mirror migration above.
+describe('migrate() -- M9 evaluations table', () => {
+  it('creates the evaluations table with every documented column', () => {
+    const db = new FakeDatabase()
+
+    migrate(asDb(db))
+
+    const table = db.tables.get('evaluations')
+    expect(table).toBeDefined()
+    const columnNames = table!.columns.map((c) => c.name).sort()
+    expect(columnNames).toEqual(
+      [
+        'id',
+        'purpose_id',
+        'created_at',
+        'model',
+        'status',
+        'smoothness',
+        'stress',
+        'comm_cost',
+        'summary',
+        'suggestions_json',
+        'input_stats_json',
+        'last_error',
+        'report_state'
+      ].sort()
+    )
+    expect(table!.columns.filter((c) => c.pk > 0).map((c) => c.name)).toEqual(['id'])
+    expect(table!.rows).toEqual([])
+  })
+
+  it('is idempotent and lossless -- running migrate() again keeps existing rows untouched', () => {
+    const db = new FakeDatabase()
+    migrate(asDb(db))
+    db.tables.get('evaluations')!.rows.push({
+      id: 'eval-1',
+      purpose_id: 'purpose-1',
+      created_at: 111,
+      model: 'haiku',
+      status: 'ok',
+      smoothness: 80,
+      stress: 20,
+      comm_cost: 10,
+      summary: 'ok',
+      suggestions_json: '[]',
+      input_stats_json: '{}',
+      last_error: null,
+      report_state: null
+    })
+
+    expect(() => migrate(asDb(db))).not.toThrow()
+
+    expect(db.tables.get('evaluations')!.rows).toHaveLength(1)
+    expect(db.tables.get('evaluations')!.rows[0]).toMatchObject({ id: 'eval-1', status: 'ok' })
+  })
+})

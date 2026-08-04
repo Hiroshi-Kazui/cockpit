@@ -490,6 +490,36 @@ describe('PurposeCoordinator.completePurpose', () => {
     const h = setup()
     expect(() => h.coordinator.completePurpose('missing')).toThrow(/not found/)
   })
+
+  // M9 (ADR-0010 D-1): completePurpose fires the evaluation trigger synchronously (fire-and-forget) after
+  // marking the purpose completed -- never awaited, so this in no way delays completePurpose's own return.
+  it('calls onPurposeCompleted with the completed purpose id after a successful completion', async () => {
+    const onPurposeCompleted = vi.fn()
+    const h = setup({ onPurposeCompleted })
+    await h.coordinator.startNewSession(0, 'C:\\repo', 'fix the bug')
+    const purposeId = h.purposeUpdates[0].id
+
+    h.coordinator.completePurpose(purposeId)
+
+    expect(onPurposeCompleted).toHaveBeenCalledWith(purposeId)
+  })
+
+  it('does not call onPurposeCompleted when completion fails (unknown purpose id)', () => {
+    const onPurposeCompleted = vi.fn()
+    const h = setup({ onPurposeCompleted })
+
+    expect(() => h.coordinator.completePurpose('missing')).toThrow()
+
+    expect(onPurposeCompleted).not.toHaveBeenCalled()
+  })
+
+  it('does not throw when onPurposeCompleted is not provided (optional dep, pre-M9 wiring)', async () => {
+    const h = setup()
+    await h.coordinator.startNewSession(0, 'C:\\repo', 'fix the bug')
+    const purposeId = h.purposeUpdates[0].id
+
+    expect(() => h.coordinator.completePurpose(purposeId)).not.toThrow()
+  })
 })
 
 describe('PurposeCoordinator launch cancellation', () => {
