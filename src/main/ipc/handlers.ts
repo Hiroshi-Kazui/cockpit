@@ -35,9 +35,11 @@ import {
   type MirrorStatusSummary,
   type BackfillProgressEvent,
   type RetryMirrorSessionRequest,
-  type RemirrorSessionRequest
+  type RemirrorSessionRequest,
+  type WindowsPtyInfo
 } from '../../shared/ipc'
 import { PtyManager } from '../pty/ptyManager'
+import { describeHostWindowsPty } from '../pty/windowsPtyInfo'
 import { resolveClaude, ClaudeResolutionError } from '../pty/resolveClaude'
 import type { PurposeCoordinator } from '../pty/purposeCoordinator'
 import { getAllPaneSettings, setPaneCwd } from '../db/paneSettingsRepo'
@@ -176,6 +178,12 @@ export function registerIpcHandlers(
   ipcMain.handle(IpcChannels.ptyKill, (_event, req: PtyKillRequest): void => {
     assertPane(req.pane)
     ptyManager.kill(req.pane)
+  })
+
+  // How the ptys this app spawns are hosted -- the renderer feeds this straight into xterm.js's
+  // `windowsPty` option, which it cannot derive from the pty byte stream itself (windowsPtyInfo.ts).
+  ipcMain.handle(IpcChannels.ptyHostInfo, (): WindowsPtyInfo | null => {
+    return describeHostWindowsPty()
   })
 
   ipcMain.handle(IpcChannels.paneSettingsGetAll, (): PaneSetting[] => {

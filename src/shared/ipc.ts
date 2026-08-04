@@ -32,6 +32,7 @@ export const IpcChannels = {
   ptyKill: 'cockpit:pty:kill',
   ptyData: 'cockpit:pty:data',
   ptyExit: 'cockpit:pty:exit',
+  ptyHostInfo: 'cockpit:pty:hostInfo',
   paneSettingsGetAll: 'cockpit:paneSettings:getAll',
   paneSettingsSetCwd: 'cockpit:paneSettings:setCwd',
   paneSettingsChooseFolder: 'cockpit:paneSettings:chooseFolder',
@@ -90,6 +91,15 @@ export interface PtyKillRequest {
 export interface PtyDataEvent {
   pane: PaneIndex
   data: string
+}
+
+/** How the pty the renderer is attached to is hosted on Windows, mirroring xterm.js's own
+ * ITerminalOptions.windowsPty shape. Sent main -> renderer once per terminal so xterm.js can enable the
+ * ConPTY/winpty compatibility behavior it cannot detect from the byte stream alone (see
+ * main/pty/windowsPtyInfo.ts for why the renderer must be told). `null` on non-Windows hosts. */
+export interface WindowsPtyInfo {
+  backend: 'conpty' | 'winpty'
+  buildNumber: number
 }
 
 /** Pushed main -> renderer when the pty process exits (spec §5 origin for session close, TD-3). */

@@ -5,6 +5,7 @@ import * as pty from 'node-pty'
 import type { IPty } from 'node-pty'
 import type { PaneIndex } from '../../shared/ipc'
 import { buildSpawnCommand, resolveClaude } from './resolveClaude'
+import type { PtyRecorder } from './ptyRecorder'
 import type { TelemetryLaunchConfig } from '../telemetry/telemetryLaunch'
 
 export interface PtyManagerEvents {
@@ -18,6 +19,10 @@ export interface PtyManagerDeps {
   /** Generates the per-launch `--settings` file + telemetry env vars (spec §4.3, TD-4). Called once per
    * spawn(), i.e. once per fresh "claude 起動" click -- this is the env-injection extension point. */
   prepareTelemetry: (pane: PaneIndex) => TelemetryLaunchConfig
+  /** Diagnostic raw-stream recorder (ptyRecorder.ts), or null when recording is off -- which it is unless
+   * COCKPIT_PTY_LOG_DIR is set. Purely observational: it never sees or alters what is forwarded to the
+   * renderer. */
+  recorder?: PtyRecorder | null
 }
 
 const DEFAULT_COLS = 80
@@ -98,11 +103,13 @@ export class PtyManager {
       cwd,
       env: stripMissingExtraCaCerts(cleanEnv({ ...process.env, ...telemetry.extraEnv }))
     })
+    this.deps.recorder?.spawned(pane, cwd, DEFAULT_COLS, DEFAULT_ROWS)
     proc.onData((data) => {
       // A pane with no `generations` entry (explicit kill(), never respawned) is not superseded --
       // only an entry that exists *and* names a different generation means a respawn has happened.
       const currentGeneration = this.generations.get(pane)
       if (currentGeneration !== undefined && currentGeneration !== generation) return
+      this.deps.recorder?.data(pane, data)
       this.deps.events.onData(pane, data)
     })
     proc.onExit(({ exitCode, signal }) => {
@@ -117,6 +124,7 @@ export class PtyManager {
       }
       const currentGeneration = this.generations.get(pane)
       if (currentGeneration !== undefined && currentGeneration !== generation) return
+      this.deps.recorder?.exited(pane, exitCode)
       this.deps.events.onExit(pane, exitCode, signal)
     })
     this.panes.set(pane, proc)
@@ -136,6 +144,7 @@ export class PtyManager {
   resize(pane: PaneIndex, cols: number, rows: number): void {
     const proc = this.panes.get(pane)
     if (!proc) return
+    this.deps.recorder?.resized(pane, cols, rows)
     proc.resize(cols, rows)
   }
 

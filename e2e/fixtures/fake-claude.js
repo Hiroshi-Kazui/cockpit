@@ -159,6 +159,19 @@ async function runInteractiveMode() {
       const message = line.trim()
       if (message.length === 0) continue
 
+      // E2E (terminal-repaint.spec.ts): repaint the screen the way a TUI frontend (ink) does, so a
+      // row-count change mid-session can be checked for buffer misalignment. `#paint <tag> clear|keep`:
+      // 'clear' wipes the screen first (the reference frame), 'keep' overwrites only the frame's own rows
+      // with ESC[K, exactly as a frontend rewriting its current frame in place would. Not a user turn, so
+      // no transcript/statusLine side effects.
+      const paint = /^#paint (\S+) (clear|keep)$/.exec(message)
+      if (paint) {
+        const [, tag, mode] = paint
+        const frame = [1, 2, 3].map((n) => `${tag}${n} 行目です\x1b[K`).join('\r\n')
+        process.stdout.write((mode === 'clear' ? '\x1b[2J\x1b[H' : '\x1b[H') + frame)
+        continue
+      }
+
       const timestamp = new Date().toISOString()
       appendTranscriptLine(transcriptPath, {
         type: 'user',

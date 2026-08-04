@@ -22,8 +22,10 @@ import {
   type PaneLaunchStartRequest,
   type PaneLaunchStartResult,
   type PaneLaunchResumeRequest,
-  type PaneLaunchResumeResult
+  type PaneLaunchResumeResult,
+  type WindowsPtyInfo
 } from '../../shared/ipc'
+import { parseWindowsBuildNumber } from '../pty/windowsPtyInfo'
 import type { PtyManager } from '../pty/ptyManager'
 import type { PurposeCoordinator } from '../pty/purposeCoordinator'
 import type { UsageCoordinator } from '../telemetry/usageCoordinator'
@@ -466,5 +468,31 @@ describe('appSettingsSetLayoutMode', () => {
 
     expect(() => handler?.(undefined, { layoutMode: 'split3' })).toThrow(/invalid layout mode/)
     expect(() => handler?.(undefined, { layoutMode: '' })).toThrow(/invalid layout mode/)
+  })
+})
+
+// The renderer cannot detect ConPTY/winpty from the pty byte stream, so xterm.js's `windowsPty`
+// compatibility option has to be fed from Main (windowsPtyInfo.ts explains what it changes). This pins the
+// channel's presence and that it carries the *real* host values through -- the backend-selection rule
+// itself is pinned in windowsPtyInfo.test.ts.
+describe('ptyHostInfo', () => {
+  beforeEach(() => {
+    unregisterIpcHandlers()
+    registeredHandlers.clear()
+  })
+
+  it('reports the host pty descriptor for xterm.js', () => {
+    setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.ptyHostInfo)
+    expect(handler).toBeDefined()
+
+    const result = handler?.(undefined, undefined)
+
+    if (process.platform !== 'win32') {
+      expect(result).toBeNull()
+      return
+    }
+    expect(result).toMatchObject({ buildNumber: parseWindowsBuildNumber(os.release()) })
+    expect(['conpty', 'winpty']).toContain((result as WindowsPtyInfo).backend)
   })
 })

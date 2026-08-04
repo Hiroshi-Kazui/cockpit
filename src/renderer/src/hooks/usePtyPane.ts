@@ -64,6 +64,26 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     termRef.current = term
     fitAddonRef.current = fitAddon
 
+    // Tell xterm.js that its pty is hosted by ConPTY/winpty. Without this it applies its non-Windows
+    // row-growth behavior, and "not having this behavior can result in missing data as the rows get
+    // replaced" (@xterm/xterm ITerminalOptions.windowsPty) -- cockpit grows/shrinks a pane's row count
+    // while claude is running every time a pane-header row appears or disappears (.pane-purpose /
+    // .pane-telemetry / .pane-repo-sync, all of which show up seconds into a session), which is exactly
+    // that path. Set asynchronously (the value comes from Main, which owns the pty) but never late in
+    // practice: nothing can be written to this terminal until the user starts a session, which needs at
+    // least one round-trip of their own. `disposed` keeps a resolved fetch off an already-disposed
+    // terminal when a pane unmounts mid-flight.
+    let disposed = false
+    void window.cockpit.pty
+      .hostInfo()
+      .then((info) => {
+        if (disposed || info === null) return
+        term.options.windowsPty = info
+      })
+      .catch((err: unknown) => {
+        setError(describeError(err))
+      })
+
     // E2E-only observation point (no production behavior change) -- registers this pane's live xterm.js
     // Terminal instance with the central per-pane test-probe registry, mirroring Pane.tsx's
     // register/`null`-unregister pattern for onRegisterFocus (see testing/terminalProbe.ts for why this
@@ -81,9 +101,12 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     const ensureRendererAndFit = (): void => {
       if (container.clientWidth === 0 || container.clientHeight === 0) return
       if (!canvasAddon) {
-        // Default DOM renderer reuses row elements across scroll, which can leave stale glyph/width
-        // state on the leftmost cell of a recycled row -- the canvas renderer repaints the whole
-        // buffer each frame (no per-row DOM reuse), avoiding that class of scroll artifact.
+        // Canvas rather than the default DOM renderer, for painting throughput on busy output.
+        // It is *not* a fix for the "leftmost cell keeps a stale glyph after scrolling" artifact it was
+        // originally introduced for (e0780da): that is not renderer damage tracking at all -- xterm.js
+        // repaints the entire viewport on every scroll under either renderer (Terminal.scrollLines ->
+        // refresh(0, rows - 1)), so a glyph that survives a scroll survives in the *buffer*. See the
+        // windowsPty note above for the buffer-level Windows path that can misalign rows.
         canvasAddon = new CanvasAddon()
         term.loadAddon(canvasAddon)
       }
@@ -108,6 +131,7 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     resizeObserver.observe(container)
 
     return () => {
+      disposed = true
       dataDisposable.dispose()
       resizeDisposable.dispose()
       resizeObserver.disconnect()
