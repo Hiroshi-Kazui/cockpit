@@ -4,7 +4,8 @@
 // (purposeCoordinator.ts) -- this component only decides *which* IPC action to call and renders state
 // pushed down from App.tsx (`purpose` prop, kept in sync via cockpit:purpose:updated).
 import { useEffect, useState } from 'react'
-import type { PaneIndex, PurposeSummary } from '@shared/ipc'
+import type { PaneIndex, PurposeSummary, RepoSyncOutcome } from '@shared/ipc'
+import { describeRepoSyncOutcome } from '@shared/gitSync'
 import { usePtyPane } from '../hooks/usePtyPane'
 import { useSessionTelemetry } from '../hooks/useSessionTelemetry'
 import { useArchiveWarning } from '../hooks/useArchiveWarning'
@@ -42,6 +43,21 @@ export function Pane({
   const [folderError, setFolderError] = useState<string | null>(null)
   const [purposeError, setPurposeError] = useState<string | null>(null)
   const [showDialog, setShowDialog] = useState(false)
+  // M11 (spec §4.2 addendum, ADR-0013): `launchKind` covers the whole paneLaunch.start/resume round-trip,
+  // which can now take up to ~30s while a git pull runs (R-7) -- disables the launch affordances for that
+  // whole window so a second click cannot start a second launch concurrently ("ボタン連打で二重起動でき
+  // ない"). FIX M7 (review iter1): distinguishes *which* launch is in flight ('start' vs 'resume') so the
+  // in-progress text never claims a git sync is happening during "再開", which never runs one (R-1/D-1).
+  // `repoSyncNotice` is the git-sync outcome from the most recent paneLaunch.start (never set by "再開") --
+  // rendered as a pane-local notification row below (never a modal; blocked-dirty/blocked-busy already got
+  // their own native alert main-side, D-9). `repoSyncExpanded`/`launchError` are FIX M8/B3 (below).
+  const [launchKind, setLaunchKind] = useState<'start' | 'resume' | null>(null)
+  const [repoSyncNotice, setRepoSyncNotice] = useState<RepoSyncOutcome | null>(null)
+  const [repoSyncExpanded, setRepoSyncExpanded] = useState(false)
+  // FIX B3 (review iter1): paneLaunch.start can resolve with `pid: null` (git sync ran, but the spawn
+  // itself then failed) instead of throwing -- usePtyPane.start no longer treats that as an exception, so
+  // this component must surface `result.message` itself instead of relying on usePtyPane's own `error`.
+  const [launchError, setLaunchError] = useState<string | null>(null)
   const session = useSessionTelemetry(paneIndex)
   const archiveWarning = useArchiveWarning(paneIndex)
   const contextUsage = usePaneContextUsage(paneIndex, running)
@@ -102,7 +118,24 @@ export function Pane({
       setFolderError('先にデフォルトフォルダを設定してください')
       return
     }
-    await start(() => window.cockpit.paneLaunch.start({ pane: paneIndex, cwd, purposeText: text }))
+    setRepoSyncNotice(null)
+    setRepoSyncExpanded(false)
+    setLaunchError(null)
+    setLaunchKind('start')
+    try {
+      const result = await start(() =>
+        window.cockpit.paneLaunch.start({ pane: paneIndex, cwd, purposeText: text })
+      )
+      if (result) {
+        setRepoSyncNotice(result.repoSync)
+        // FIX B3 (review iter1): a resolved pid:null result means the git sync ran (repoSync above is
+        // already set) but the spawn itself failed -- surface that failure too, distinctly from the
+        // git-sync notice.
+        if (result.pid === null) setLaunchError(result.message)
+      }
+    } finally {
+      setLaunchKind(null)
+    }
   }
 
   async function handleResume(): Promise<void> {
@@ -111,7 +144,19 @@ export function Pane({
       return
     }
     setFolderError(null)
-    await start(() => window.cockpit.paneLaunch.resume({ pane: paneIndex, cwd: defaultCwd }))
+    // "再開" never runs the git sync (ADR-0013/D-1) -- clear any stale notice from a previous launch so
+    // it isn't misread as describing this resume. FIX minor-C (review iter2): also clear a stale
+    // launchError from a previous failed "＋ 新規セッション" attempt, which otherwise kept showing after
+    // a successful "再開".
+    setRepoSyncNotice(null)
+    setRepoSyncExpanded(false)
+    setLaunchError(null)
+    setLaunchKind('resume')
+    try {
+      await start(() => window.cockpit.paneLaunch.resume({ pane: paneIndex, cwd: defaultCwd }))
+    } finally {
+      setLaunchKind(null)
+    }
   }
 
   async function handleComplete(): Promise<void> {
@@ -124,7 +169,7 @@ export function Pane({
     }
   }
 
-  const displayedError = error ?? folderError ?? purposeError
+  const displayedError = error ?? folderError ?? purposeError ?? launchError
   // spec §4.2/§4.6: an empty-started purpose (text==='') has no title to generate yet and is displayed
   // as "未設定" until the session's first non-command chat turn decides it (purposeDetectionCoordinator,
   // pushed back down via the same cockpit:purpose:updated channel this component already listens to via
@@ -135,6 +180,13 @@ export function Pane({
       ? '未設定'
       : (purpose.title ?? '(タイトル生成中…)')
     : null
+
+  // FIX M8 (review iter1): pre-computed here (rather than inline in JSX) so the notification row's render
+  // branch below stays simple. See its render-site comment for why only the first line shows by default.
+  const repoSyncFullText = repoSyncNotice ? describeRepoSyncOutcome(repoSyncNotice) : null
+  const repoSyncFirstLine = repoSyncFullText?.split('\n')[0] ?? null
+  const repoSyncHasMoreLines = repoSyncFullText?.includes('\n') ?? false
+  const repoSyncIsFailed = repoSyncNotice?.kind === 'failed'
 
   return (
     <div className="pane">
@@ -169,13 +221,27 @@ export function Pane({
           <button
             type="button"
             onClick={handleOpenDialog}
-            disabled={!claudeResolved || !defaultCwd}
+            disabled={!claudeResolved || !defaultCwd || launchKind !== null}
             title={claudeResolved ? undefined : 'claude CLI が見つからないため起動できません'}
           >
             ＋ 新規セッション
           </button>
         )}
       </div>
+      {/* M11 (R-7): shown for the whole paneLaunch.start round-trip, which can take up to ~30s while a git
+          pull runs -- keeps the "＋ 新規セッション" affordance (disabled above) from looking merely
+          unresponsive. FIX M7 (review iter1): "再開" gets its own, git-sync-free wording (R-1/D-1: "再開"
+          never runs the git sync at all). */}
+      {launchKind === 'start' && (
+        <div className="pane-launch-status" role="status">
+          新規セッションを準備しています（git 同期を確認中）…
+        </div>
+      )}
+      {launchKind === 'resume' && (
+        <div className="pane-launch-status" role="status">
+          再開しています…
+        </div>
+      )}
       {purpose && (
         <div
           className="pane-purpose"
@@ -199,6 +265,51 @@ export function Pane({
       {archiveWarning && (
         <div className="pane-warning" role="status" title={archiveWarning}>
           アーカイブ同期に問題が発生しました: {archiveWarning}
+        </div>
+      )}
+      {/* M11 (spec §4.2 addendum, ADR-0013, R-8): the git-sync outcome from the most recent "＋ 新規セッ
+          ション" launch. blocked-dirty/blocked-busy already got their own native alert dialog main-side
+          (D-9) before this ever renders -- this row is the "always visible, never blocks" record of what
+          happened (or didn't) for every outcome kind, including the ones that never show a modal.
+          FIX M8 (review iter1): a blocked-dirty's full text (repo path + every sample path, one per line)
+          previously rendered in full here, permanently stealing several lines of height from the
+          `flex: 1` terminal below it and forcing a fit()+pty.resize() reflow of the CLI's own output. Only
+          the first line is shown by default (ellipsis-truncated, full text still on `title` for a quick
+          hover); "詳細"/"閉じる" toggles the full multi-line text on demand, and "×" dismisses the row
+          entirely -- both opt-in, so the common case never grows the row past one line. */}
+      {repoSyncNotice && repoSyncFullText && (
+        <div
+          className={repoSyncIsFailed ? 'pane-repo-sync pane-repo-sync--failed' : 'pane-repo-sync'}
+          role={repoSyncIsFailed ? 'alert' : 'status'}
+        >
+          <span
+            className={
+              repoSyncExpanded
+                ? 'pane-repo-sync__text pane-repo-sync__text--expanded'
+                : 'pane-repo-sync__text'
+            }
+            title={repoSyncFullText}
+          >
+            {repoSyncExpanded ? repoSyncFullText : repoSyncFirstLine}
+          </span>
+          {repoSyncHasMoreLines && (
+            <button
+              type="button"
+              className="pane-repo-sync__toggle"
+              aria-expanded={repoSyncExpanded}
+              onClick={() => setRepoSyncExpanded((v) => !v)}
+            >
+              {repoSyncExpanded ? '折りたたむ' : '詳細'}
+            </button>
+          )}
+          <button
+            type="button"
+            className="pane-repo-sync__dismiss"
+            onClick={() => setRepoSyncNotice(null)}
+            aria-label="この通知を閉じる"
+          >
+            ×
+          </button>
         </div>
       )}
       {session && (
@@ -238,7 +349,7 @@ export function Pane({
               type="button"
               className="pane-resume-overlay__button"
               onClick={() => void handleResume()}
-              disabled={!claudeResolved || !defaultCwd}
+              disabled={!claudeResolved || !defaultCwd || launchKind !== null}
               title={claudeResolved ? undefined : 'claude CLI が見つからないため起動できません'}
             >
               ▶ 再開

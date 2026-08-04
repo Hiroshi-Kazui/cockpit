@@ -148,6 +148,20 @@ describe('computeResumeVerificationRange (ADR-0009 decision 3: per-root resume c
       expect(result.reason).toMatch(/バックフィル|削除/)
     }
   })
+
+  it('refuses a recorded progress that is the unrecoverable sentinel, without producing a garbage read offset', () => {
+    // Regression: a sentinel'd row (recordedSyncedBytes === UNRECOVERABLE_SYNCED_BYTES) previously
+    // returned ok:true with offset = MAX_SAFE_INTEGER - destSize, which readSpoolBytes then failed on
+    // with a misleading "short read ... at offset 9007199…" error. It must be refused outright.
+    const result = computeResumeVerificationRange({
+      destSize: 26_537_588,
+      recordedSyncedBytes: UNRECOVERABLE_SYNCED_BYTES
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toMatch(/回復不能|中止/)
+    }
+  })
 })
 
 describe('computeBackfillPlan (ADR-0008/D-4 explicit backfill, followups structure #3)', () => {

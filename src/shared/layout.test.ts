@@ -1,6 +1,14 @@
 // Behavioral tests for layout -> visible pane mapping (spec §4.1: 1 / 2分割 / 4分割, max 4 panes).
 import { describe, expect, it } from 'vitest'
-import { isLayoutMode, paneCountForLayout, visiblePanesForLayout } from './layout'
+import {
+  clampGridFraction,
+  GRID_FRACTION_DEFAULT,
+  GRID_FRACTION_MAX,
+  GRID_FRACTION_MIN,
+  isLayoutMode,
+  paneCountForLayout,
+  visiblePanesForLayout
+} from './layout'
 
 describe('paneCountForLayout', () => {
   it('single layout shows exactly 1 pane', () => {
@@ -40,5 +48,27 @@ describe('isLayoutMode', () => {
   it('rejects unknown strings', () => {
     expect(isLayoutMode('triple')).toBe(false)
     expect(isLayoutMode('')).toBe(false)
+  })
+})
+
+describe('clampGridFraction (draggable pane-divider bounds)', () => {
+  it('passes through a value already within range', () => {
+    expect(clampGridFraction(0.5)).toBe(0.5)
+    expect(clampGridFraction(0.3)).toBe(0.3)
+  })
+
+  it('clamps below the minimum (a pane can never be dragged to zero)', () => {
+    expect(clampGridFraction(0)).toBe(GRID_FRACTION_MIN)
+    expect(clampGridFraction(-1)).toBe(GRID_FRACTION_MIN)
+  })
+
+  it('clamps above the maximum', () => {
+    expect(clampGridFraction(1)).toBe(GRID_FRACTION_MAX)
+    expect(clampGridFraction(2)).toBe(GRID_FRACTION_MAX)
+  })
+
+  it('falls back to the even-split default for non-finite input', () => {
+    expect(clampGridFraction(Number.NaN)).toBe(GRID_FRACTION_DEFAULT)
+    expect(clampGridFraction(Number.POSITIVE_INFINITY)).toBe(GRID_FRACTION_DEFAULT)
   })
 })

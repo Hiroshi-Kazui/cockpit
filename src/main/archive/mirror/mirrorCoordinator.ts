@@ -55,6 +55,12 @@ export interface MirrorControlPort {
   setOutputRoot(root: string | null): void
   getStatusSummary(): MirrorStatusSummary
   startBackfill(onProgress: (event: BackfillProgressEvent) => void): Promise<void>
+  /** User-initiated retry of a single errored/sentinel-blocked row (ArchiveOutputSettings' 再試行 button):
+   * drops the row and re-baselines it so the corrected verification logic re-evaluates the session. */
+  retrySession(sessionId: string): void
+  /** User-initiated "再ミラー": discards a genuinely-diverged destination copy and re-copies the full spool
+   * from scratch (ArchiveOutputSettings' 再ミラー button). Destructive at the destination only. */
+  remirrorSession(sessionId: string): Promise<void>
 }
 
 const DEFAULT_DEBOUNCE_MS = 1000
@@ -111,6 +117,42 @@ export class MirrorCoordinator implements MirrorControlPort {
     return this.currentRoot
   }
 
+  /** ADR-0009 keeps *automatic* retries off for a sentinel-blocked row, but an explicit user action may
+   * clear it: drop the (session, currentRoot) row entirely and re-baseline from scratch. With no existing
+   * row, rebaselineSession adopts the destination's current content as the baseline and re-verifies it
+   * against the spool -- so a row that was blocked only by the old garbage-offset bug recovers to
+   * 'synced', while one whose destination genuinely diverged is re-flagged with an accurate message
+   * (never the misleading MAX_SAFE_INTEGER offset again). No-op while no output root is configured. */
+  retrySession(sessionId: string): void {
+    if (this.currentRoot === null) return
+    this.clearSessionTimers(sessionId)
+    this.repo.delete(sessionId, this.currentRoot)
+    void this.rebaselineSession(sessionId, this.currentRoot)
+  }
+
+  /** ADR-0008/D-4 recovery for a genuinely-diverged destination: the append-only guard can never resume a
+   * destination whose content no longer matches the spool, so the only safe fix is to discard that
+   * destination copy and re-copy the full spool from byte 0. Destructive at the destination only (the
+   * authoritative spool is never touched). No-op while no output root is configured. */
+  async remirrorSession(sessionId: string): Promise<void> {
+    if (this.currentRoot === null || this.sink === null) return
+    const root = this.currentRoot
+    this.clearSessionTimers(sessionId)
+    await this.sink.deleteSession(sessionId)
+    this.repo.delete(sessionId, root)
+    this.repo.upsert({
+      sessionId,
+      destRoot: root,
+      syncedBytes: 0,
+      metaSynced: false,
+      state: 'pending',
+      lastError: null,
+      updatedAt: this.now()
+    })
+    await this.runOnce(sessionId)
+    this.onStatusChanged()
+  }
+
   /** Called (via main/index.ts) whenever the archiver syncs new bytes into a session's spool
    * transcript.jsonl copy. A no-op entirely (not even a timer is armed) while no output root is
    * configured -- AC "archive_output_root 未設定ならミラー系を起動しない". */
@@ -155,6 +197,22 @@ export class MirrorCoordinator implements MirrorControlPort {
       clearTimeout(timer)
       this.retryTimers.delete(key)
     }
+  }
+
+  /** Cancels *every* pending timer for `sessionId` -- its debounce timer plus both operations' retry state
+   * -- used by the explicit user recovery actions (retrySession/remirrorSession), which discard the row and
+   * restart the session's mirroring from a known baseline: any timer still armed from the pre-reset attempt
+   * would fire against state that no longer exists. Unlike `clearRetryState`, which is deliberately scoped
+   * to the one operation that just settled, this is the whole-session reset, so it must enumerate both
+   * RetryOperationKind values rather than assume a single sessionId-keyed retry entry. */
+  private clearSessionTimers(sessionId: string): void {
+    const debounce = this.debounceTimers.get(sessionId)
+    if (debounce) {
+      clearTimeout(debounce)
+      this.debounceTimers.delete(sessionId)
+    }
+    const operations: readonly RetryOperationKind[] = ['verify', 'sync']
+    for (const operation of operations) this.clearRetryState(sessionId, operation)
   }
 
   /** ADR-0008/D-4: switching (or first configuring) the output root never auto-copies pre-existing spool
@@ -239,7 +297,12 @@ export class MirrorCoordinator implements MirrorControlPort {
     // at call time, so there is no equivalent "current value could change under us" hazard to guard against.
 
     const existing = this.repo.get(sessionId, root)
-    if (existing?.state === 'error' && isUnrecoverableSyncedBytes(existing.syncedBytes)) {
+    // A sentinel'd (unrecoverable) row must never be reprocessed, regardless of its `state` column: the
+    // sentinel value is the single source of truth for "permanently blocked" (isUnrecoverableSyncedBytes,
+    // mirrorPlan.ts). Also gating on `state === 'error'` here meant a sentinel row that somehow carried a
+    // non-error state slipped through and fed the sentinel into computeResumeVerificationRange, producing
+    // a garbage read offset (≈ MAX_SAFE_INTEGER - destSize) and a misleading "short read" error.
+    if (existing && isUnrecoverableSyncedBytes(existing.syncedBytes)) {
       return
     }
 

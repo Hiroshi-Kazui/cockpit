@@ -27,6 +27,10 @@ export interface ArchiveMirrorRepoPort {
   upsert(row: ArchiveMirrorRow): void
   listAll(): ArchiveMirrorRow[]
   listForDestRoot(destRoot: string): ArchiveMirrorRow[]
+  /** Removes the row for this exact (session, dest_root) pair, if present. Used by the user-initiated
+   * "retry" of an errored/sentinel-blocked mirror row (mirrorCoordinator.retrySession): dropping the row
+   * lets the next rebaseline re-evaluate the session from scratch instead of staying permanently blocked. */
+  delete(sessionId: string, destRoot: string): void
 }
 
 interface RawArchiveMirrorRow {
@@ -108,11 +112,19 @@ export function listArchiveMirrorRowsForDestRoot(
 
 /** Real adapter, backed by SQLite -- see this file's header comment for why mirrorCoordinator depends on
  * the narrow `ArchiveMirrorRepoPort` instead of a raw `Database` handle. */
+export function deleteArchiveMirrorRow(db: Database, sessionId: string, destRoot: string): void {
+  db.prepare('DELETE FROM archive_mirror WHERE session_id = ? AND dest_root = ?').run(
+    sessionId,
+    destRoot
+  )
+}
+
 export function createSqliteArchiveMirrorRepo(db: Database): ArchiveMirrorRepoPort {
   return {
     get: (sessionId, destRoot) => getArchiveMirrorRow(db, sessionId, destRoot),
     upsert: (row) => upsertArchiveMirrorRow(db, row),
     listAll: () => listAllArchiveMirrorRows(db),
-    listForDestRoot: (destRoot) => listArchiveMirrorRowsForDestRoot(db, destRoot)
+    listForDestRoot: (destRoot) => listArchiveMirrorRowsForDestRoot(db, destRoot),
+    delete: (sessionId, destRoot) => deleteArchiveMirrorRow(db, sessionId, destRoot)
   }
 }

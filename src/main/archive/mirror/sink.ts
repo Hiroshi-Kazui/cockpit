@@ -23,4 +23,9 @@ export interface ArchiveSink {
    * different byte ranges of the same length are otherwise indistinguishable from `statTranscript` alone,
    * which is exactly the gap a root-switch-back-and-forth (A -> B -> A) can otherwise silently fall into. */
   readTranscriptPrefix(sessionId: string, length: number): Promise<Buffer>
+  /** Removes the destination copy (the whole session folder) so a subsequent sync re-copies from an empty
+   * destination. Used only by the user-initiated "再ミラー" recovery (mirrorCoordinator.remirrorSession)
+   * for a destination whose content genuinely diverged from the spool and so cannot be resumed under the
+   * append-only guard. No-op if the folder does not exist. */
+  deleteSession(sessionId: string): Promise<void>
 }

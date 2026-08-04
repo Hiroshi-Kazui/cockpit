@@ -7,6 +7,7 @@ import type { ArchiveMirrorRepoPort, ArchiveMirrorRow } from '../../db/archiveMi
 import type { BackfillProgressEvent } from '../../../shared/ipc'
 import type { ArchiveSink } from './sink'
 import type { SpoolReader } from './spoolReader'
+import { UNRECOVERABLE_SYNCED_BYTES } from '../../../shared/mirrorPlan'
 
 // ADR-0009: archive_mirror is keyed by (session_id, dest_root) -- the fake repo below mirrors that exactly
 // (a composite-key Map) so these tests exercise the coordinator against the same lookup shape the real
@@ -33,7 +34,10 @@ function createFakeRepo(): ArchiveMirrorRepoPort & { rows: Map<string, ArchiveMi
     upsert: (row) => rows.set(compositeKey(row.sessionId, row.destRoot), { ...row }),
     listAll: () => [...rows.values()].map((r) => ({ ...r })),
     listForDestRoot: (root) =>
-      [...rows.values()].filter((r) => r.destRoot === root).map((r) => ({ ...r }))
+      [...rows.values()].filter((r) => r.destRoot === root).map((r) => ({ ...r })),
+    delete: (sessionId, destRoot) => {
+      rows.delete(compositeKey(sessionId, destRoot))
+    }
   }
 }
 
@@ -105,6 +109,10 @@ function createFakeSink(): FakeSink {
       }
       const current = transcripts.get(id) ?? ''
       return Buffer.from(current, 'utf-8').subarray(0, length)
+    },
+    deleteSession: async (id) => {
+      transcripts.delete(id)
+      metadata.delete(id)
     }
   }
   return sink
@@ -163,6 +171,42 @@ describe('MirrorCoordinator (spec §4.4.1, ADR-0008/ADR-0009)', () => {
     expect(row?.state).toBe('synced')
     expect(row?.syncedBytes).toBe(6)
     expect(row?.metaSynced).toBe(true)
+  })
+
+  it('remirrorSession discards a diverged destination copy and re-copies the full spool from scratch', async () => {
+    const repo = createFakeRepo()
+    const sink = createFakeSink()
+    const root = 'D:\\mirror'
+    const fullSpool = 'AAAA\nBBBB\nCCCC\n'
+    const coordinator = new MirrorCoordinator({
+      repo,
+      spool: createFakeSpool(new Map([['sess-1', { transcript: fullSpool, metadata: '{"t":9}' }]])),
+      createSink: () => sink
+    })
+
+    // Pre-existing bad state: a destination copy that diverged from the spool, plus a sentinel-blocked
+    // error row (the sentinel makes setOutputRoot's rebaseline short-circuit, so it stays errored).
+    sink.transcripts.set('sess-1', 'AAAA\nWRONG\n')
+    repo.upsert({
+      sessionId: 'sess-1',
+      destRoot: root,
+      syncedBytes: UNRECOVERABLE_SYNCED_BYTES,
+      metaSynced: false,
+      state: 'error',
+      lastError: 'content mismatch',
+      updatedAt: 0
+    })
+    coordinator.setOutputRoot(root)
+    expect(repo.get('sess-1', root)?.state).toBe('error')
+
+    await coordinator.remirrorSession('sess-1')
+
+    // Destination now byte-for-byte equals the spool, and the row is healthy again.
+    expect(sink.transcripts.get('sess-1')).toBe(fullSpool)
+    expect(sink.metadata.get('sess-1')).toBe('{"t":9}')
+    const row = repo.get('sess-1', root)
+    expect(row?.state).toBe('synced')
+    expect(row?.syncedBytes).toBe(Buffer.byteLength(fullSpool, 'utf-8'))
   })
 
   it('coalesces rapid repeated onTranscriptAppended calls into a single debounced sync', async () => {

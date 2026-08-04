@@ -26,3 +26,14 @@ export function visiblePanesForLayout(mode: LayoutMode): PaneIndex[] {
 export function isLayoutMode(value: string): value is LayoutMode {
   return (LAYOUT_MODES as readonly string[]).includes(value)
 }
+
+// ---- Pane-grid splitter fractions (draggable dividers between panes) ----
+export const GRID_FRACTION_MIN = 0.15
+export const GRID_FRACTION_MAX = 0.85
+export const GRID_FRACTION_DEFAULT = 0.5
+
+/** Clamp a (possibly persisted/NaN) divider fraction into range, defaulting to an even split. */
+export function clampGridFraction(value: number): number {
+  if (!Number.isFinite(value)) return GRID_FRACTION_DEFAULT
+  return Math.min(GRID_FRACTION_MAX, Math.max(GRID_FRACTION_MIN, value))
+}

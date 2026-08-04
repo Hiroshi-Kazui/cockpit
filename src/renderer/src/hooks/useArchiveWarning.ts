@@ -6,9 +6,16 @@ import type { PaneIndex } from '@shared/ipc'
 
 export function useArchiveWarning(paneIndex: PaneIndex): string | null {
   const [message, setMessage] = useState<string | null>(null)
+  const [trackedPane, setTrackedPane] = useState(paneIndex)
+
+  // A warning belongs to the pane it was raised for; switching panes clears it in the same commit as
+  // the pane change, so pane A's archive error is never shown against pane B.
+  if (trackedPane !== paneIndex) {
+    setTrackedPane(paneIndex)
+    setMessage(null)
+  }
 
   useEffect(() => {
-    setMessage(null)
     const unsubscribe = window.cockpit.session.onArchiveError((event) => {
       if (event.pane === paneIndex) setMessage(event.message)
     })

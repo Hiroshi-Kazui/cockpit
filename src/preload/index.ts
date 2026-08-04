@@ -13,6 +13,8 @@ import {
   type ChooseFolderResult,
   type AppSettings,
   type SetClaudePathRequest,
+  type SetLayoutModeRequest,
+  type SetPaneGridFractionsRequest,
   type ClaudeResolveStatus,
   type SessionSummary,
   type SessionArchiveErrorEvent,
@@ -34,7 +36,9 @@ import {
   type SetArchiveOutputRootRequest,
   type SetArchiveOutputRootResult,
   type MirrorStatusSummary,
-  type BackfillProgressEvent
+  type BackfillProgressEvent,
+  type RetryMirrorSessionRequest,
+  type RemirrorSessionRequest
 } from '../shared/ipc'
 
 export interface CockpitApi {
@@ -55,6 +59,8 @@ export interface CockpitApi {
   appSettings: {
     get: () => Promise<AppSettings>
     setClaudePath: (req: SetClaudePathRequest) => Promise<void>
+    setLayoutMode: (req: SetLayoutModeRequest) => Promise<void>
+    setPaneGridFractions: (req: SetPaneGridFractionsRequest) => Promise<void>
   }
   claude: {
     resolveStatus: () => Promise<ClaudeResolveStatus>
@@ -93,6 +99,8 @@ export interface CockpitApi {
     onMirrorStatusUpdated: (listener: (summary: MirrorStatusSummary) => void) => () => void
     startBackfill: () => Promise<void>
     onBackfillProgress: (listener: (event: BackfillProgressEvent) => void) => () => void
+    retryMirrorSession: (req: RetryMirrorSessionRequest) => Promise<void>
+    remirrorSession: (req: RemirrorSessionRequest) => Promise<void>
   }
 }
 
@@ -119,7 +127,10 @@ const api: CockpitApi = {
   },
   appSettings: {
     get: () => ipcRenderer.invoke(IpcChannels.appSettingsGet),
-    setClaudePath: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetClaudePath, req)
+    setClaudePath: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetClaudePath, req),
+    setLayoutMode: (req) => ipcRenderer.invoke(IpcChannels.appSettingsSetLayoutMode, req),
+    setPaneGridFractions: (req) =>
+      ipcRenderer.invoke(IpcChannels.appSettingsSetPaneGridFractions, req)
   },
   claude: {
     resolveStatus: () => ipcRenderer.invoke(IpcChannels.claudeResolveStatus)
@@ -156,7 +167,9 @@ const api: CockpitApi = {
       subscribe<MirrorStatusSummary>(IpcChannels.archiveMirrorStatusUpdated, listener),
     startBackfill: () => ipcRenderer.invoke(IpcChannels.archiveBackfillStart),
     onBackfillProgress: (listener) =>
-      subscribe<BackfillProgressEvent>(IpcChannels.archiveBackfillProgress, listener)
+      subscribe<BackfillProgressEvent>(IpcChannels.archiveBackfillProgress, listener),
+    retryMirrorSession: (req) => ipcRenderer.invoke(IpcChannels.archiveMirrorRetry, req),
+    remirrorSession: (req) => ipcRenderer.invoke(IpcChannels.archiveMirrorRemirror, req)
   }
 }
 
