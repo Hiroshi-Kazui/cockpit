@@ -28,6 +28,14 @@ export interface PtyManagerDeps {
 const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 30
 
+/** Permission mode every pane's claude session starts in. cockpit panes are driven interactively by the
+ * user in their own repo, and the per-tool confirmation prompts break the "生 pty 素通し" flow, so the
+ * app opts panes into bypassPermissions at launch. This is only the *starting* mode -- the user can
+ * still cycle modes inside the pane (Shift+Tab), and it is passed as a CLI flag rather than baked into
+ * the generated `--settings` file because `--permission-mode` is a validated CLI choice whereas an
+ * unknown `permissions.defaultMode` value is silently ignored. */
+const DEFAULT_PERMISSION_MODE = 'bypassPermissions'
+
 /** Filters out undefined values so the result is honestly typed as Record<string, string> (no `as` type lie). */
 function cleanEnv(env: Record<string, string | undefined>): Record<string, string> {
   const result: Record<string, string> = {}
@@ -79,7 +87,8 @@ export class PtyManager {
 
   /**
    * Spawn claude in the given pane's cwd. `extraArgs` (e.g. `['--continue']` for the M4 one-click
-   * "再開" resume flow, TD-7) are appended after the app's own `--settings` flag. Throws
+   * "再開" resume flow, TD-7) are appended after the app's own `--settings` / `--permission-mode`
+   * flags. Throws
    * ClaudeResolutionError (via resolveClaude) if the CLI cannot be located — callers (IPC handler)
    * must propagate this to the renderer (AC #9).
    */
@@ -92,6 +101,8 @@ export class PtyManager {
     const { command, args } = buildSpawnCommand(resolution, [
       '--settings',
       telemetry.settingsPath,
+      '--permission-mode',
+      DEFAULT_PERMISSION_MODE,
       ...extraArgs
     ])
     const generation = ++this.nextGeneration

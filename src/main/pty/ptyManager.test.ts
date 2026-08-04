@@ -173,6 +173,36 @@ describe('PtyManager respawn generation guard', () => {
     expect(current.write).toHaveBeenCalledWith('x')
   })
 
+  // Panes launch with bypassPermissions as their starting permission mode so the per-tool confirmation
+  // prompts don't interrupt the raw pty passthrough, and `extraArgs` (e.g. `--continue`) must still come
+  // last so a caller can override it.
+  describe('default permission mode', () => {
+    it('passes --permission-mode bypassPermissions after the app --settings flag', () => {
+      manager.spawn(0, 'C:\\repo')
+
+      const [, args] = vi.mocked(nodePty).spawn.mock.calls[0]
+      expect(args).toEqual([
+        '--settings',
+        'C:\\settings.json',
+        '--permission-mode',
+        'bypassPermissions'
+      ])
+    })
+
+    it('keeps extraArgs after the permission mode flag', () => {
+      manager.spawn(0, 'C:\\repo', ['--continue'])
+
+      const [, args] = vi.mocked(nodePty).spawn.mock.calls[0]
+      expect(args).toEqual([
+        '--settings',
+        'C:\\settings.json',
+        '--permission-mode',
+        'bypassPermissions',
+        '--continue'
+      ])
+    })
+  })
+
   // M4 FIX iter3 (code #4): generations Map must clear its per-pane entry on kill()/killAll(),
   // symmetric with the `panes` Map, without regressing the guard's correctness pinned above.
   describe('generations Map symmetry with panes Map (M4 FIX iter3 #4)', () => {
