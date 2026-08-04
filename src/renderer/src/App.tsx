@@ -129,9 +129,9 @@ export function App(): React.JSX.Element {
   // must be React state -- it feeds usePaneFocusShortcuts' `enabled` argument below, which the hook
   // re-subscribes its keydown listener on (see its own dependency array), so App needs to actually
   // re-render when a pane-local EvaluationDialog opens/closes for the shortcut to be disabled in time.
-  const [evaluationDialogOpenPanes, setEvaluationDialogOpenPanes] = useState<ReadonlySet<PaneIndex>>(
-    () => new Set()
-  )
+  const [evaluationDialogOpenPanes, setEvaluationDialogOpenPanes] = useState<
+    ReadonlySet<PaneIndex>
+  >(() => new Set())
   const handleEvaluationDialogVisibilityChange = useCallback(
     (pane: PaneIndex, visible: boolean): void => {
       setEvaluationDialogOpenPanes((prev) => {
