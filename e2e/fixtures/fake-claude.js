@@ -204,6 +204,47 @@ async function runInteractiveMode() {
         continue
       }
 
+      // E2E (terminal-repaint.spec.ts): `#frame <tag> <offset>` repaints an indented frame the way a TUI
+      // frontend does -- absolute cursor to column 3, erase-to-end, write -- with the content one row lower
+      // each time. That "one row goes blank, the next row gains text at the same column" diff is what makes
+      // ConPTY compact its update into a bare LF used as an *index* (move down a row, keep the column),
+      // which is the sequence a terminal that converts LF to CRLF gets wrong. Every painted row therefore
+      // starts at column 2 and columns 0-1 must stay blank forever. Not a user turn -- no transcript or
+      // statusLine side effects.
+      if (message === '#frames') {
+        // Full screen height minus the last two rows: ConPTY only compacts an update into the LF index when
+        // the change covers the screen the way a real TUI frame does -- a small island of changed rows gets
+        // absolute cursor addressing instead, and so does a frame whose repaints are separated by the
+        // terminal's own echo of the next typed command, which is why the whole sequence is self-driven
+        // here from one command rather than one command per frame.
+        const painted = (process.stdout.rows || 24) - 2
+        const draw = (tag, offset) => {
+          let out = ''
+          for (let r = 1; r <= painted; r += 1) {
+            out += `\x1b[${r};3H\x1b[K`
+            const i = r - offset
+            if (i >= 1 && i % 2 === 1) out += `◆ ${tag}${i} 行目の日本語テキストです`
+          }
+          return out + `\x1b[${painted + 1};1H\x1b[K`
+        }
+        // The leading clear wipes this command's own echo too, so the frame starts from the blank
+        // columns 0-1 that every repaint below then promises to leave blank.
+        process.stdout.write('\x1b[2J' + draw('F1', 0))
+        const steps = [
+          ['F2', 1],
+          ['F3', 0],
+          ['F4', 1],
+          ['F5', 0]
+        ]
+        let step = 0
+        const timer = setInterval(() => {
+          process.stdout.write(draw(steps[step][0], steps[step][1]))
+          step += 1
+          if (step >= steps.length) clearInterval(timer)
+        }, 300)
+        continue
+      }
+
       // E2E (terminal-repaint.spec.ts): `#emit <path>` writes a UTF-8 file to the pty verbatim as ordinary
       // scrolling output, so a spec can push its own text material (the caller owns the file; nothing about
       // it is baked in here) through the real ConPTY and then compare xterm.js's buffer against it. Like

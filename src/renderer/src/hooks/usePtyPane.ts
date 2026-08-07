@@ -52,9 +52,17 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     const container = containerRef.current
     if (!container) return
 
+    // No `convertEol`. A pty stream is not text: ConPTY repaints the screen with a bare LF used as an
+    // *index* (move down one row, keep the column), e.g. `ESC[3;3H ESC[K <text> LF <text>` -- the second
+    // line is meant to land at column 2, and columns 0-1 are deliberately left alone because ConPTY knows
+    // they already hold what it wants. `convertEol: true` adds a carriage return to that LF, so the text
+    // lands at column 0 instead and the cells ConPTY never re-sends survive at the left edge. That is the
+    // reported "スクロールすると左端の文字が1文字分左にずれ、行頭に前の行の文字が残る" artifact: measured
+    // against a real ConPTY driving the real claude CLI's scrollback viewer, 36+ corrupted rows per scroll
+    // session with it on and none with it off, no resize involved. Anything cockpit writes to the terminal
+    // itself (the exit notice below) uses an explicit CRLF, so nothing depends on the conversion.
     const term = new Terminal({
       cursorBlink: true,
-      convertEol: true,
       fontSize: 13,
       fontFamily: 'Consolas, "Cascadia Mono", monospace'
     })

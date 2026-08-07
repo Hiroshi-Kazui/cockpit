@@ -223,6 +223,72 @@ test.describe('端末バッファの行整合（行数変化をまたぐ部分�
     }
   })
 
+  // The scroll-driven half of the reported artifact, with no resize involved at all. ConPTY compacts a
+  // "this row goes blank, the next row gains text at the same column" repaint into a bare LF used as an
+  // *index* (move down one row, keep the column): `ESC[r;3H ESC[K <text> LF <text>`. Columns 0-1 are
+  // deliberately never re-sent, because ConPTY knows they already hold what it wants. A terminal that
+  // converts that LF into CRLF puts the second line at column 0 instead of column 2, so the text reads one
+  // full-width character too far left and the cells ConPTY never re-sends survive at the row head -- the
+  // reported "スクロールすると左端の文字が1文字分左にずれ、行頭に前の行の文字が残る". Measured against the
+  // real claude CLI's own scrollback viewer driven by PageUp and by the mouse wheel: 36+ corrupted rows per
+  // scroll session with xterm.js's `convertEol` on, none with it off, at every geometry tried.
+  test('an indented in-place repaint never leaves anything in the row head', async () => {
+    test.setTimeout(90_000)
+    const launched = await launchApp()
+    const scratchCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-e2e-cwd-'))
+
+    try {
+      const { app, window: page } = launched
+      await useFakeClaude(page)
+
+      await app.evaluate(({ dialog }, dir) => {
+        dialog.showOpenDialog = () =>
+          Promise.resolve({ canceled: false, filePaths: [dir] } as Electron.OpenDialogReturnValue)
+      }, scratchCwd)
+      await page.locator('.pane-header button:has-text("フォルダ選択")').first().click()
+      await expect(page.locator('.pane-cwd').first()).toHaveText(scratchCwd)
+
+      const purposeText = `E2E行頭-${Date.now()}`
+      await page.locator('.pane-header button:has-text("＋ 新規セッション")').first().click()
+      await page.locator('#purpose-dialog-text').fill(purposeText)
+      await page.locator('.dialog-row__primary').click()
+      await expect(page.locator('.pane-header button:has-text("停止")').first()).toBeVisible()
+      await expect
+        .poll(async () => await readPaneTerminalText(page, 0), {
+          timeout: 20_000,
+          message: 'TD-1 の目的プロンプト送信が完了するまで待機'
+        })
+        .toContain(`了解しました（フェイク応答）: ${purposeText}`)
+
+      await focusPaneTerminal(page, 0)
+      // One command, five self-driven repaints at alternating offsets, so every repaint blanks a row that
+      // had text and fills the row below it -- the diff shape that makes ConPTY reach for the LF index.
+      await page.keyboard.type('#frames')
+      await page.keyboard.press('Enter')
+      await expect
+        .poll(async () => await readPaneTerminalText(page, 0), {
+          timeout: 15_000,
+          message: '最後のフレームが端末バッファに現れるまで待機'
+        })
+        .toContain('◆ F51 行目')
+
+      // Every painted row starts at column 2, so any buffer line carrying the frame's marker that does not
+      // begin with two spaces is either a row that landed a full-width character too far left, or a stale
+      // cell of an earlier frame that survived in the row head.
+      const offending = (await readPaneTerminalText(page, 0))
+        .split('\n')
+        .filter((line) => line.includes('◆') && !line.startsWith('  '))
+      expect(
+        offending,
+        '再描画後の行頭（0〜1 列目）に文字が残っている、または行が1文字分左にずれている'
+      ).toEqual([])
+    } finally {
+      await closeApp(launched)
+      fs.rmSync(scratchCwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      cleanupFakeClaudeTranscripts()
+    }
+  })
+
   // The root cause behind the reported artifact, stated as an invariant on the one thing cockpit itself
   // controls. ConPTY reprints its own view of the screen on every resize and still counts rows xterm.js has
   // moved into its scrollback as on-screen, so *any* change to a running pty's row count desynchronises the
