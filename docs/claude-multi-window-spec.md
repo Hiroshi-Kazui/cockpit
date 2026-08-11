@@ -16,6 +16,10 @@ claude CLI を最大4つのペインで並行起動し、セッションごと�
 - Electron + TypeScript
 - Renderer: React + xterm.js（ターミナル描画）
 - Main: node-pty（claude CLI のpty起動）、chokidar（JSONL監視）
+  - pty のホストには **node-pty 同梱の conpty.dll**（`useConptyDll`）を使う。OS 組み込みの conhost 版
+    ConPTY は自前のスクリーンバッファを持って画面を再翻訳・再描画するため、行対応のずれや部分再描画の
+    取り違えといった表示崩れの発生機構を抱える。同梱版（Windows Terminal 系譜）はその翻訳層を持たない。
+    環境変数 `COCKPIT_DISABLE_CONPTY_DLL=1` を設定した場合のみ OS 版に戻る（ADR-0014）
 - ストレージ: SQLite（better-sqlite3、セッションメタデータのインデックス）＋ ファイルシステム（JSONLアーカイブ本体）
 - タイトル生成・目的完了時の評価: `claude -p --model haiku` によるヘッドレス1ショット実行（プロンプトはstdin渡しのみ、argvに動的文字列を載せない）
 

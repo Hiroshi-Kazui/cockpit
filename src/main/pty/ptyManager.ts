@@ -7,6 +7,7 @@ import type { PaneIndex } from '../../shared/ipc'
 import { buildSpawnCommand, resolveClaude } from './resolveClaude'
 import type { PtyRecorder } from './ptyRecorder'
 import type { TelemetryLaunchConfig } from '../telemetry/telemetryLaunch'
+import { resolveHostUseConptyDll } from './windowsPtyInfo'
 
 export interface PtyManagerEvents {
   onData: (pane: PaneIndex, data: string) => void
@@ -112,7 +113,13 @@ export class PtyManager {
       cols: DEFAULT_COLS,
       rows: DEFAULT_ROWS,
       cwd,
-      env: stripMissingExtraCaCerts(cleanEnv({ ...process.env, ...telemetry.extraEnv }))
+      env: stripMissingExtraCaCerts(cleanEnv({ ...process.env, ...telemetry.extraEnv })),
+      // M12 (ADR-0014 D-1/D-2): host on the same conpty.dll node-pty bundles regardless of platform (a
+      // no-op option outside win32) unless the diagnostic escape hatch is set. windowsPtyInfo.ts is the
+      // single place this flag's env-var parsing rule lives -- see its doc comment for why -- so the
+      // renderer-facing hostInfo descriptor (ipc/handlers.ts's ptyHostInfo) can never disagree with what
+      // was actually passed here.
+      useConptyDll: resolveHostUseConptyDll()
     })
     this.deps.recorder?.spawned(pane, cwd, DEFAULT_COLS, DEFAULT_ROWS)
     proc.onData((data) => {

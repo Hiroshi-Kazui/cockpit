@@ -254,3 +254,50 @@ test.describe('full flow with fake claude: 起動 -> セッション開始 -> �
     }
   })
 })
+
+// M12 (ADR-0014): ptyManager.spawn() now hosts every pty on node-pty's bundled conpty.dll
+// (useConptyDll: true) instead of the OS conhost-hosted ConPTY. useConptyDll changes node-pty's own
+// kill()/exit-code plumbing internally (windowsPtyAgent.js's `_useConptyDll` branches, cited in
+// windowsPtyInfo.ts), so this pins that the exit notice usePtyPane.ts writes on a real pty exit still
+// reaches the terminal under the new backend -- not just that the process dies.
+test.describe('pty exit notice under the bundled ConPTY (M12, ADR-0014)', () => {
+  test('stopping a running session writes the exit notice into the pane', async () => {
+    test.setTimeout(60_000)
+    const launched = await launchApp()
+    const scratchCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cockpit-e2e-cwd-'))
+
+    try {
+      const { app, window: page } = launched
+      await useFakeClaude(page)
+
+      await app.evaluate(({ dialog }, dir) => {
+        dialog.showOpenDialog = () =>
+          Promise.resolve({ canceled: false, filePaths: [dir] } as Electron.OpenDialogReturnValue)
+      }, scratchCwd)
+      await page.locator(PANE_HEADER_FOLDER_BUTTON).first().click()
+      await expect(page.locator('.pane-cwd').first()).toHaveText(scratchCwd)
+
+      await page.locator(PANE_HEADER_NEW_SESSION_BUTTON).first().click()
+      await page.locator('#purpose-dialog-text').fill(`E2E終了通知-${Date.now()}`)
+      await page.locator('.dialog-row__primary').click()
+      const stopButton = page.locator('.pane-header button:has-text("停止")').first()
+      await expect(stopButton).toBeVisible()
+
+      await stopButton.click()
+      await expect
+        .poll(async () => await readPaneTerminalText(page, 0), {
+          timeout: 15_000,
+          message: '[claude exited: code=...] の終了通知が端末バッファに現れるまで待機'
+        })
+        .toMatch(/\[claude exited: code=\d+\]/)
+    } finally {
+      try {
+        await closeApp(launched)
+        await rmDirWithRetry(scratchCwd)
+        cleanupFakeClaudeTranscripts()
+      } catch (cleanupErr) {
+        console.error('post-test cleanup failed:', cleanupErr)
+      }
+    }
+  })
+})

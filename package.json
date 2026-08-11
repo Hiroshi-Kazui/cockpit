@@ -15,7 +15,7 @@
     "test:watch": "vitest",
     "test:e2e": "npm run build && playwright test",
     "postinstall": "patch-package",
-    "rebuild": "patch-package && cmd /d /s /c \"set NoDefaultCurrentDirectoryInExePath=&& electron-rebuild -f -w better-sqlite3,node-pty\"",
+    "rebuild": "patch-package && cmd /d /s /c \"set NoDefaultCurrentDirectoryInExePath=&& electron-rebuild -f -w better-sqlite3,node-pty\" && node node_modules/node-pty/scripts/post-install.js",
     "setup": "node node_modules/electron/install.js && npm run rebuild"
   },
   "dependencies": {

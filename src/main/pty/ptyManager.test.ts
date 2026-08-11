@@ -313,4 +313,48 @@ describe('PtyManager respawn generation guard', () => {
       })
     })
   })
+
+  // M12 (ADR-0014 D-1/D-2): spawn() must ask node-pty for its bundled conpty.dll by default, and only the
+  // diagnostic escape hatch COCKPIT_DISABLE_CONPTY_DLL=1 turns that back off -- the env var's own parsing
+  // rule is pinned once in windowsPtyInfo.test.ts (resolveUseConptyDll), this only pins that spawn()
+  // actually wires that decision into node-pty's options.
+  describe('useConptyDll spawn option (M12, ADR-0014)', () => {
+    function spawnOptions(): { useConptyDll?: boolean } {
+      const call = vi.mocked(nodePty).spawn.mock.calls[0]
+      return (call[2] ?? {}) as { useConptyDll?: boolean }
+    }
+
+    function withDisableConptyDll(value: string | undefined, run: () => void): void {
+      const original = process.env.COCKPIT_DISABLE_CONPTY_DLL
+      if (value === undefined) delete process.env.COCKPIT_DISABLE_CONPTY_DLL
+      else process.env.COCKPIT_DISABLE_CONPTY_DLL = value
+      try {
+        run()
+      } finally {
+        if (original === undefined) delete process.env.COCKPIT_DISABLE_CONPTY_DLL
+        else process.env.COCKPIT_DISABLE_CONPTY_DLL = original
+      }
+    }
+
+    it('passes useConptyDll: true by default (env var unset)', () => {
+      withDisableConptyDll(undefined, () => {
+        manager.spawn(0, 'C:\\repo')
+        expect(spawnOptions().useConptyDll).toBe(true)
+      })
+    })
+
+    it('passes useConptyDll: false only when COCKPIT_DISABLE_CONPTY_DLL is exactly "1"', () => {
+      withDisableConptyDll('1', () => {
+        manager.spawn(0, 'C:\\repo')
+        expect(spawnOptions().useConptyDll).toBe(false)
+      })
+    })
+
+    it('keeps useConptyDll: true for a malformed override value (not a silent fallback)', () => {
+      withDisableConptyDll('true', () => {
+        manager.spawn(0, 'C:\\repo')
+        expect(spawnOptions().useConptyDll).toBe(true)
+      })
+    })
+  })
 })
