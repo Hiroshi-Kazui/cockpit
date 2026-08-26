@@ -18,6 +18,7 @@
 | 0012 | canvas レンダラ採用に伴う端末可観測性の観測点 | proposed | [0012-terminal-observability-for-e2e.md](0012-terminal-observability-for-e2e.md) |
 | 0013 | 新規セッション開始時の git 同期 | proposed | [0013-git-sync-on-session-launch.md](0013-git-sync-on-session-launch.md) |
 | 0014 | pty ホスティングを node-pty 同梱 ConPTY（useConptyDll）へ切替 | proposed | [0014-conpty-dll-hosting.md](0014-conpty-dll-hosting.md) |
+| 0015 | ペイン下部の口述入力欄と、そこから pty へ送る経路 | proposed | [0015-pane-dictation-input.md](0015-pane-dictation-input.md) |
 
 TD-1〜TD-7（2026-07-19 決定）は `docs/technical-decisions.md` に凍結のまま残す
 （コード・過去ログからの `TD-n` 参照を壊さないため）。ADR-0008 以降はこのディレクトリに追加する。

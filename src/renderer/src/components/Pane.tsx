@@ -13,6 +13,7 @@ import { usePaneContextUsage } from '../hooks/usePaneContextUsage'
 import { ContextGauge } from './ContextGauge'
 import { PurposeDialog } from './PurposeDialog'
 import { EvaluationDialog } from './EvaluationDialog'
+import { DictationInput } from './DictationInput'
 
 interface PaneProps {
   paneIndex: PaneIndex
@@ -47,7 +48,7 @@ export function Pane({
   onRegisterFocus,
   onEvaluationDialogVisibilityChange
 }: PaneProps): React.JSX.Element {
-  const { containerRef, running, error, start, stop, focus } = usePtyPane(paneIndex)
+  const { containerRef, running, error, start, stop, focus, sendText } = usePtyPane(paneIndex)
   const [folderError, setFolderError] = useState<string | null>(null)
   const [purposeError, setPurposeError] = useState<string | null>(null)
   const [showDialog, setShowDialog] = useState(false)
@@ -428,6 +429,15 @@ export function Pane({
           </div>
         )}
       </div>
+      {/* M13 (ADR-0015 R-1/D-3): always mounted, fixed-height band -- never conditionally rendered on
+          `running`/layout, for the same ConPTY-row-count reason as .pane-info above (see that comment).
+          `running===false` disables the box (D-5) instead of unmounting it. */}
+      <DictationInput
+        paneIndex={paneIndex}
+        running={running}
+        sendText={sendText}
+        focusTerminal={focus}
+      />
       {showDialog && defaultCwd && (
         <PurposeDialog
           pane={paneIndex}

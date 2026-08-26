@@ -29,6 +29,15 @@ export interface UsePtyPaneResult {
    * first "新規セッション"/"再開". A stable identity across re-renders (only depends on `paneIndex`,
    * closing over the ref rather than its current value) so callers can register it once. */
   focus: () => void
+  /** M13 (ADR-0015 D-1/D-5): sends `text` to this pane's pty through the *same* Terminal instance the
+   * xterm.js input passthrough already uses -- `term.paste(text)`, then (when `submit` is true)
+   * `term.input('\r')` for the Enter keystroke. Both calls run through xterm.js's own `onData` trigger,
+   * which is what `dataDisposable` above forwards to `window.cockpit.pty.write`; this function never calls
+   * that IPC method itself, and never builds bracketed-paste escape sequences (`ESC[200~`/`ESC[201~`) --
+   * that decision belongs to xterm.js's `paste()`, which already knows whether DECSET 2004 is active for
+   * this session (ADR-0015 D-1). A no-op while `running` is false, so a caller cannot lose typed text into
+   * a pty that was never told to run (R-7: the UI's own `disabled` is not the only guard). */
+  sendText: (text: string, submit: boolean) => void
 }
 
 function describeError(err: unknown): string {
@@ -208,5 +217,13 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     termRef.current?.focus()
   }, [])
 
-  return { containerRef, running, error, start, stop, focus }
+  const sendText = useCallback((text: string, submit: boolean) => {
+    if (!runningRef.current) return
+    const term = termRef.current
+    if (!term) return
+    term.paste(text)
+    if (submit) term.input('\r')
+  }, [])
+
+  return { containerRef, running, error, start, stop, focus, sendText }
 }

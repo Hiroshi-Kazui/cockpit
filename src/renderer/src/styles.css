@@ -478,6 +478,38 @@ body.is-pane-resizing {
   opacity: 0.5;
 }
 
+/* M13 (ADR-0015 R-1/R-2/D-3): the pane-local dictation textbox, below the terminal. Fixed height for the
+   same reason as .pane-info above -- a running pty's row count must never change (ConPTY repaint
+   desync) -- so this box neither grows with its own content (overflow-y:auto instead) nor is user-
+   resizable (resize:none; a drag-resize would shrink .pane-terminal-wrap, a flex:1 sibling, which would
+   resize the live terminal exactly like the informational rows used to). Always mounted regardless of
+   `running`/layout (see Pane.tsx's render-site comment); `disabled` communicates "no pty to send to" (D-5)
+   without ever unmounting the element. */
+.pane-dictation {
+  flex: 0 0 56px;
+  height: 56px;
+  overflow-y: auto;
+  resize: none;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  font-size: 12px;
+  color: #e6e6e6;
+  background: var(--bg-panel);
+  border: none;
+  border-top: 1px solid var(--border);
+  outline-offset: -2px;
+}
+
+.pane-dictation::placeholder {
+  color: #7f7f7f;
+}
+
+.pane-dictation:disabled {
+  color: #7f7f7f;
+  cursor: not-allowed;
+}
+
 /* M2 minimal telemetry verification line (plain text only -- cumulative archived tokens, spec §4.4/§5.
    Deliberately secondary/small: the *primary* per-pane usage indicator is the context-consumption
    gauge above (.context-gauge, M3 spec §4.5), not this line. */
