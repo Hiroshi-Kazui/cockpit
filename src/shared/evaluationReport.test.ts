@@ -33,6 +33,7 @@ function sampleData(overrides: Partial<EvaluationReportData> = {}): EvaluationRe
       truncatedUser: false,
       truncatedAssistant: false
     },
+    appealText: null,
     ...overrides
   }
 }
@@ -83,6 +84,20 @@ describe('renderEvaluationReportMarkdown', () => {
   it('is deterministic (pure rendering, no timestamps/randomness beyond the input data)', () => {
     const data = sampleData()
     expect(renderEvaluationReportMarkdown(data)).toBe(renderEvaluationReportMarkdown(data))
+  })
+})
+
+describe('renderEvaluationReportMarkdown -- appeal (M14, R-7)', () => {
+  it('records the appeal text that drove this re-evaluation', () => {
+    const md = renderEvaluationReportMarkdown(
+      sampleData({ appealText: 'ストレス度が体感より高すぎる' })
+    )
+    expect(md).toContain('異議申し立て')
+    expect(md).toContain('ストレス度が体感より高すぎる')
+  })
+
+  it('omits the appeal section entirely for an ordinary (non-appealed) evaluation', () => {
+    expect(renderEvaluationReportMarkdown(sampleData())).not.toContain('異議申し立て')
   })
 })
 

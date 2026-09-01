@@ -17,6 +17,7 @@ function makeSummary(overrides: Partial<EvaluationSummary> = {}): EvaluationSumm
     inputStats: null,
     lastError: null,
     reportState: null,
+    appealText: null,
     ...overrides
   }
 }
@@ -33,6 +34,7 @@ function makeDeps(overrides: Partial<EvaluationCoordinatorDeps> = {}): Evaluatio
     getPurposeText: () => '目的テキスト',
     getPurposeTitle: () => 'タイトル',
     listSessionsForPurpose: () => [{ id: 'session-1', jsonlPath: '/archive/session-1/transcript.jsonl' }],
+    getPreviousEvaluation: () => ({ smoothness: 40, stress: 80, commCost: 70, summary: '苦戦しました' }),
     readSession: async () => ({ sessionId: 'session-1', userTexts: ['hello'], assistantTexts: ['world'] }),
     insertPending: (params) =>
       makeSummary({
@@ -41,7 +43,8 @@ function makeDeps(overrides: Partial<EvaluationCoordinatorDeps> = {}): Evaluatio
         createdAt: params.createdAt,
         model: params.model,
         status: 'pending',
-        inputStats: params.inputStats
+        inputStats: params.inputStats,
+        appealText: params.appealText
       }),
     insertSkipped: (params) =>
       makeSummary({
@@ -50,7 +53,8 @@ function makeDeps(overrides: Partial<EvaluationCoordinatorDeps> = {}): Evaluatio
         createdAt: params.createdAt,
         model: params.model,
         status: 'skipped',
-        inputStats: params.inputStats
+        inputStats: params.inputStats,
+        appealText: params.appealText
       }),
     finalizeOk: (id, params) =>
       makeSummary({
@@ -194,6 +198,79 @@ describe('EvaluationCoordinator', () => {
 
 /** Lets every already-scheduled microtask (promise chain) in the fire-and-forget pipeline settle before
  * assertions run -- the coordinator's public methods are deliberately synchronous/non-awaited (D-1). */
+describe('EvaluationCoordinator -- appeal-driven re-evaluation (M14, R-5/R-6/R-7)', () => {
+  it('embeds the appeal and the disputed evaluation in the prompt, and records it on the new row', async () => {
+    const runEvaluation = vi.fn(async (_prompt: string, _model: string) =>
+      JSON.stringify({ smoothness: 70, stress: 30, commCost: 20, summary: '見直しました', suggestions: [] })
+    )
+    const deps = makeDeps({ runEvaluation })
+    const coordinator = new EvaluationCoordinator(deps)
+
+    coordinator.rerun('purpose-1', '実際には詰まらず進んだのでストレス度が高すぎる')
+    await flushMicrotasks()
+
+    const prompt = runEvaluation.mock.calls[0][0]
+    expect(prompt).toContain('異議申し立て')
+    expect(prompt).toContain('実際には詰まらず進んだのでストレス度が高すぎる')
+    expect(prompt).toContain('苦戦しました')
+    expect(prompt).toContain('80')
+    expect(deps.updates[0].appealText).toBe('実際には詰まらず進んだのでストレス度が高すぎる')
+  })
+
+  it('reads the disputed evaluation before inserting its own row', async () => {
+    const order: string[] = []
+    const deps = makeDeps({
+      getPreviousEvaluation: () => {
+        order.push('read-previous')
+        return { smoothness: 40, stress: 80, commCost: 70, summary: '苦戦しました' }
+      }
+    })
+    const originalInsert = deps.insertPending
+    deps.insertPending = (params) => {
+      order.push('insert-pending')
+      return originalInsert(params)
+    }
+    const coordinator = new EvaluationCoordinator(deps)
+
+    coordinator.rerun('purpose-1', '体感と違う')
+    await flushMicrotasks()
+
+    expect(order).toEqual(['read-previous', 'insert-pending'])
+  })
+
+  it('treats a plain re-run (and a whitespace-only appeal) as no appeal at all', async () => {
+    const getPreviousEvaluation = vi.fn(() => null)
+    const runEvaluation = vi.fn(async (_prompt: string, _model: string) =>
+      JSON.stringify({ smoothness: 80, stress: 10, commCost: 5, summary: 'ok', suggestions: [] })
+    )
+    const deps = makeDeps({ getPreviousEvaluation, runEvaluation })
+    const coordinator = new EvaluationCoordinator(deps)
+
+    coordinator.rerun('purpose-1')
+    await flushMicrotasks()
+    coordinator.rerun('purpose-1', '   ')
+    await flushMicrotasks()
+
+    expect(getPreviousEvaluation).not.toHaveBeenCalled()
+    for (const call of runEvaluation.mock.calls) {
+      expect(call[0]).not.toContain('異議申し立て')
+    }
+    expect(deps.updates.every((update) => update.appealText === null)).toBe(true)
+  })
+
+  it('still creates a brand-new row for an appealed re-run (append-only, R-7)', async () => {
+    const finalizeOk = vi.fn((id: string) => makeSummary({ id, status: 'ok' }))
+    const deps = makeDeps({ finalizeOk })
+    const coordinator = new EvaluationCoordinator(deps)
+
+    coordinator.rerun('purpose-1', '体感と違う')
+    await flushMicrotasks()
+
+    expect(deps.updates[0].id).toBe('eval-pending')
+    expect(finalizeOk).toHaveBeenCalledWith('eval-pending', expect.anything())
+  })
+})
+
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 10; i++) {
     await Promise.resolve()

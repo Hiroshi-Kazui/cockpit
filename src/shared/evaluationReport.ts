@@ -17,6 +17,9 @@ export interface EvaluationReportData {
   summary: string
   suggestions: readonly EvaluationSuggestion[]
   inputStats: EvaluationInputStats
+  /** M14 (R-7, ADR-0016 D-4): the user's appeal that drove this re-evaluation, or null for an ordinary
+   * completion-triggered run -- so a report never hides that its evaluation was produced under dispute. */
+  appealText: string | null
 }
 
 /** D-5 "eval_id 単位の新規書き出しのみ": every report is named solely after its (always-fresh, UUID)
@@ -59,6 +62,11 @@ export function renderEvaluationReportMarkdown(data: EvaluationReportData): stri
     }
   }
   lines.push('')
+  if (data.appealText !== null && data.appealText.trim().length > 0) {
+    lines.push('## 異議申し立て（この評価はユーザーの申し立てを踏まえた再評価です）')
+    lines.push(data.appealText.trim())
+    lines.push('')
+  }
   lines.push('## 入力統計')
   lines.push(`- セッション数: ${data.inputStats.sessionCount}`)
   lines.push(`- ユーザー発言数: ${data.inputStats.userMessageCount}`)

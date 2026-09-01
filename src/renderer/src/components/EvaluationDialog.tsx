@@ -4,6 +4,7 @@
 // same mounting convention SessionBrowser.tsx/ArchiveOutputSettings.tsx already established), opened
 // automatically right after a "完了" action (Pane.tsx) and re-openable afterward on demand.
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { EVALUATION_APPEAL_MAX_CHARS } from '@shared/evaluation'
 import { RadarChart, type RadarAxis } from './RadarChart'
 import { useEvaluationForPurpose } from '../hooks/useEvaluationForPurpose'
 
@@ -17,7 +18,9 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-const FOCUSABLE_SELECTOR = 'button:not(:disabled)'
+// M14: the appeal box joins the trap -- a Tab cycle that skipped it would strand keyboard users on the
+// buttons with no way into the field they are meant to fill in.
+const FOCUSABLE_SELECTOR = 'button:not(:disabled), textarea:not(:disabled)'
 
 const CATEGORY_LABEL: Record<'user' | 'environment', string> = {
   user: 'ユーザー側の思考・行動',
@@ -32,6 +35,10 @@ export function EvaluationDialog({
   const { evaluation, loadError } = useEvaluationForPurpose(purposeId)
   const [rerunError, setRerunError] = useState<string | null>(null)
   const [rerunning, setRerunning] = useState(false)
+  // M14 (R-5, ADR-0016): the user's own account of how this evaluation missed their experience. Sent with
+  // the re-run so the next evaluation is anchored to what is actually being disputed -- an empty/
+  // whitespace-only appeal is not an appeal and cannot be submitted (the plain 再評価 button covers that).
+  const [appealText, setAppealText] = useState('')
   const dialogRef = useRef<HTMLDivElement | null>(null)
   // M9 FIX (iter1 blocking, manual-open half): "評価を見る" stays available for any completed purpose
   // regardless of the current evaluation_enabled toggle (Pane.tsx), including one that was never evaluated
@@ -58,11 +65,14 @@ export function EvaluationDialog({
     }
   }, [])
 
-  async function handleRerun(): Promise<void> {
+  async function handleRerun(appeal: string | null = null): Promise<void> {
     setRerunError(null)
     setRerunning(true)
     try {
-      await window.cockpit.evaluation.rerun({ purposeId })
+      await window.cockpit.evaluation.rerun({ purposeId, appealText: appeal })
+      // Only clear the box once the request was actually accepted -- a failed submit must not lose text
+      // the user typed (they would otherwise have to write the whole appeal again to retry).
+      if (appeal !== null) setAppealText('')
     } catch (err) {
       setRerunError(describeError(err))
     } finally {
@@ -108,6 +118,10 @@ export function EvaluationDialog({
   }
 
   const canRerun = evaluation !== null && (evaluation.status === 'ok' || evaluation.status === 'error')
+  // R-5: there is only something to dispute once an evaluation actually produced scores. An 'error' row
+  // has nothing to disagree with -- the plain 再評価 button above is the right action there.
+  const canAppeal = evaluation?.status === 'ok'
+  const appealSubmittable = appealText.trim().length > 0 && !rerunning
 
   return (
     <div className="dialog-backdrop evaluation-dialog-backdrop" role="presentation" onClick={onClose}>
@@ -161,6 +175,12 @@ export function EvaluationDialog({
             </div>
           )}
 
+          {evaluation?.status === 'ok' && evaluation.appealText !== null && (
+            <p className="evaluation-dialog__appeal-note" role="status">
+              この評価は、あなたの異議申し立てを踏まえた再評価です。申し立て内容: {evaluation.appealText}
+            </p>
+          )}
+
           {evaluation?.status === 'ok' && (
             <>
               <div className="evaluation-dialog__chart">
@@ -212,6 +232,40 @@ export function EvaluationDialog({
                   再評価の開始に失敗しました: {rerunError}
                 </span>
               )}
+            </div>
+          )}
+
+          {/* M14 (R-5/R-6): the appeal path. Deliberately *not* framed as "点数を上げてもらう" -- the
+              prompt built from this text (shared/evaluation.ts) tells the model to weigh the appeal
+              against the transcript rather than agree with it, and the wording here says so. */}
+          {canAppeal && (
+            <div className="evaluation-dialog__appeal">
+              <h4>評価が体感と違うとき</h4>
+              <label htmlFor="evaluation-appeal-text">
+                どこがどう体感と違うかを書いて、再評価を求められます
+              </label>
+              <textarea
+                id="evaluation-appeal-text"
+                className="evaluation-dialog__appeal-text"
+                value={appealText}
+                maxLength={EVALUATION_APPEAL_MAX_CHARS}
+                rows={3}
+                placeholder="例: 途中の手戻りは1回だけで、ストレス度80は体感より高すぎる"
+                onChange={(e) => setAppealText(e.target.value)}
+              />
+              <div className="evaluation-dialog__appeal-actions">
+                <button
+                  type="button"
+                  onClick={() => void handleRerun(appealText)}
+                  disabled={!appealSubmittable}
+                >
+                  異議を申し立てて再評価
+                </button>
+                <span className="evaluation-dialog__hint">
+                  申し立ては実データと突き合わせて再判定されます（そのまま点数が動くとは限りません）。
+                  元の評価は履歴として残ります。
+                </span>
+              </div>
             </div>
           )}
 

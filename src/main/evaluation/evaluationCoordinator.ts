@@ -11,6 +11,8 @@ import {
   buildEvaluationInput,
   buildEvaluationPrompt,
   parseEvaluationResult,
+  type EvaluationAppeal,
+  type EvaluationAppealPrevious,
   type EvaluationSessionInput
 } from '../../shared/evaluation'
 import { renderEvaluationReportJson, renderEvaluationReportMarkdown } from '../../shared/evaluationReport'
@@ -31,6 +33,9 @@ export interface InsertEvaluationParams {
   createdAt: number
   model: string | null
   inputStats: EvaluationInputStats
+  /** M14 (R-7): the appeal this run answers, stored on the brand-new row it creates. Null for an ordinary
+   * completion-triggered run. */
+  appealText: string | null
 }
 
 export interface FinalizeOkParams {
@@ -53,6 +58,9 @@ export interface EvaluationCoordinatorDeps {
   getPurposeText: (purposeId: string) => string | null
   getPurposeTitle: (purposeId: string) => string | null
   listSessionsForPurpose: (purposeId: string) => readonly EvaluationSessionRef[]
+  /** M14 (R-6): the purpose's current (about-to-be-superseded) evaluation, read *before* this run inserts
+   * its own row -- what an appeal is an appeal *against*. Only called when an appeal is present. */
+  getPreviousEvaluation: (purposeId: string) => EvaluationAppealPrevious | null
   readSession: (sessionId: string, jsonlPath: string | null) => Promise<EvaluationSessionInput>
   insertPending: (params: InsertEvaluationParams) => EvaluationSummary
   insertSkipped: (params: InsertEvaluationParams) => EvaluationSummary
@@ -82,7 +90,7 @@ export class EvaluationCoordinator {
   /** D-1: called right after PurposeCoordinator.completePurpose succeeds. Fire-and-forget -- never
    * awaited by the caller, so completePurpose's own IPC response is never delayed by this. */
   triggerForCompletedPurpose(purposeId: string): void {
-    this.run(purposeId).catch((err: unknown) => {
+    this.run(purposeId, null).catch((err: unknown) => {
       // Defense-in-depth only: every awaited step inside run() already catches and records its own
       // failure as a visible `error`/`skipped` evaluation row -- this only fires if something outside
       // that (e.g. a deps function itself throwing synchronously) escapes. Never silent (CLAUDE.md).
@@ -91,13 +99,26 @@ export class EvaluationCoordinator {
   }
 
   /** R-7: re-runs an evaluation for `purposeId`, always producing a brand-new `evaluations` row
-   * (append-only) rather than editing a prior one -- same fire-and-forget contract as the trigger above. */
-  rerun(purposeId: string): void {
-    this.triggerForCompletedPurpose(purposeId)
+   * (append-only) rather than editing a prior one -- same fire-and-forget contract as the trigger above.
+   * M14 (R-5/R-6): `appealText` carries the user's own account of how the previous evaluation missed their
+   * experience; it is embedded in the new run's prompt together with the evaluation being disputed. A
+   * null/whitespace-only appeal is an ordinary re-run (never recorded as an appeal). */
+  rerun(purposeId: string, appealText: string | null = null): void {
+    this.run(purposeId, appealText).catch((err: unknown) => {
+      console.error(`[evaluation] pipeline failed unexpectedly for purpose ${purposeId}`, err)
+    })
   }
 
-  private async run(purposeId: string): Promise<void> {
+  private async run(purposeId: string, appealText: string | null = null): Promise<void> {
     if (!this.deps.getEnabled()) return
+
+    // Read the disputed evaluation *before* this run inserts its own row -- afterwards, "the purpose's
+    // latest evaluation" would be this run's own pending row (R-6).
+    const trimmedAppeal = appealText === null ? '' : appealText.trim()
+    const appeal: EvaluationAppeal | null =
+      trimmedAppeal.length === 0
+        ? null
+        : { text: trimmedAppeal, previous: this.deps.getPreviousEvaluation(purposeId) }
 
     const model = this.deps.getModel()
     const purposeText = this.deps.getPurposeText(purposeId) ?? ''
@@ -114,15 +135,27 @@ export class EvaluationCoordinator {
     if (built.isEmpty) {
       // D-8: no genuine user text anywhere in this purpose's sessions -- never call the LLM, confirm
       // 'skipped' directly (there is no pending phase to transition out of; nothing was ever run).
-      const skipped = this.deps.insertSkipped({ purposeId, createdAt, model, inputStats: built.stats })
+      const skipped = this.deps.insertSkipped({
+        purposeId,
+        createdAt,
+        model,
+        inputStats: built.stats,
+        appealText: appeal?.text ?? null
+      })
       this.deps.onEvaluationUpdated(skipped)
       return
     }
 
-    const pending = this.deps.insertPending({ purposeId, createdAt, model, inputStats: built.stats })
+    const pending = this.deps.insertPending({
+      purposeId,
+      createdAt,
+      model,
+      inputStats: built.stats,
+      appealText: appeal?.text ?? null
+    })
     this.deps.onEvaluationUpdated(pending)
 
-    const prompt = buildEvaluationPrompt(purposeText, built.promptBody)
+    const prompt = buildEvaluationPrompt(purposeText, built.promptBody, appeal)
 
     let raw: string
     try {
@@ -185,7 +218,8 @@ export class EvaluationCoordinator {
       commCost,
       summary: finalized.summary ?? '',
       suggestions: finalized.suggestions,
-      inputStats: finalized.inputStats ?? fallbackStats
+      inputStats: finalized.inputStats ?? fallbackStats,
+      appealText: finalized.appealText
     }
     const markdown = renderEvaluationReportMarkdown(reportData)
     const json = renderEvaluationReportJson(reportData)

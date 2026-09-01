@@ -167,10 +167,31 @@ export function migrate(database: Database): void {
       suggestions_json  TEXT,
       input_stats_json  TEXT,
       last_error        TEXT,
-      report_state      TEXT
+      report_state      TEXT,
+      -- M14 (R-7, ADR-0016 D-4): the user's appeal that drove this (re-)evaluation; NULL for an ordinary
+      -- completion-triggered run. Existing databases get it via addEvaluationAppealTextColumn() below.
+      appeal_text       TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_evaluations_purpose_created ON evaluations(purpose_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_evaluations_created_at ON evaluations(created_at);
   `)
+
+  addEvaluationAppealTextColumn(database)
+}
+
+/**
+ * M14 (ADR-0016 D-4), idempotent startup migration: `CREATE TABLE IF NOT EXISTS` above is a no-op on a
+ * database created before this milestone, so an M9-era `evaluations` table would never gain the
+ * `appeal_text` column from it. Adding a nullable column is additive and lossless -- every existing row
+ * reads back as `appeal_text = NULL`, which is exactly "this evaluation was not produced under an appeal"
+ * -- so no table rebuild (and therefore no transaction) is needed, unlike the archive_mirror primary-key
+ * change above. Runs *after* the CREATE TABLE so a fresh install already has the column and this is a
+ * no-op there too (TD-6 idempotent-migration precedent).
+ */
+function addEvaluationAppealTextColumn(database: Database): void {
+  const columns = database.prepare('PRAGMA table_info(evaluations)').all() as TableInfoColumn[]
+  if (columns.length === 0) return // defensive: table absent (never true right after the CREATE above)
+  if (columns.some((column) => column.name === 'appeal_text')) return
+  database.exec('ALTER TABLE evaluations ADD COLUMN appeal_text TEXT;')
 }

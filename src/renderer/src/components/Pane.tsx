@@ -48,7 +48,8 @@ export function Pane({
   onRegisterFocus,
   onEvaluationDialogVisibilityChange
 }: PaneProps): React.JSX.Element {
-  const { containerRef, running, error, start, stop, focus, sendText } = usePtyPane(paneIndex)
+  const { containerRef, running, error, start, stop, focus, sendText, cleanup } =
+    usePtyPane(paneIndex)
   const [folderError, setFolderError] = useState<string | null>(null)
   const [purposeError, setPurposeError] = useState<string | null>(null)
   const [showDialog, setShowDialog] = useState(false)
@@ -74,8 +75,12 @@ export function Pane({
   // itself then failed) instead of throwing -- usePtyPane.start no longer treats that as an exception, so
   // this component must surface `result.message` itself instead of relying on usePtyPane's own `error`.
   const [launchError, setLaunchError] = useState<string | null>(null)
-  const session = useSessionTelemetry(paneIndex)
-  const archiveWarning = useArchiveWarning(paneIndex)
+  // M14 (R-1, ADR-0016 D-1): bumped by handleStop when a *completed* purpose's pane is stopped, which is
+  // how the informational rows below (session telemetry, archive warning) are dropped along with the
+  // terminal contents -- they describe the session that just ended, and the pane is about to be reused.
+  const [infoResetKey, setInfoResetKey] = useState(0)
+  const session = useSessionTelemetry(paneIndex, infoResetKey)
+  const archiveWarning = useArchiveWarning(paneIndex, infoResetKey)
   const contextUsage = usePaneContextUsage(paneIndex, running)
 
   // M5 (AC "キーボードでのペイン間フォーカス移動"): registers this pane's terminal-focus callback with
@@ -219,6 +224,23 @@ export function Pane({
     }
   }
 
+  /** M14 (R-1/R-2, ADR-0016 D-1): stopping a pane whose purpose is already completed empties it for the
+   * next session -- terminal contents (including scrollback) and every informational row that described
+   * the finished session. A pane whose purpose is still `active` is stopped *pending a 再開*, so nothing
+   * is cleared there: the terminal is the only record of where that conversation left off. */
+  async function handleStop(): Promise<void> {
+    const wasCompleted = purpose?.status === 'completed'
+    await stop()
+    if (!wasCompleted) return
+    cleanup()
+    setFolderError(null)
+    setPurposeError(null)
+    setLaunchError(null)
+    setRepoSyncNotice(null)
+    setRepoSyncExpanded(false)
+    setInfoResetKey((key) => key + 1)
+  }
+
   const displayedError = error ?? folderError ?? purposeError ?? launchError
   // spec §4.2/§4.6: an empty-started purpose (text==='') has no title to generate yet and is displayed
   // as "未設定" until the session's first non-command chat turn decides it (purposeDetectionCoordinator,
@@ -271,7 +293,7 @@ export function Pane({
           </button>
         )}
         {running ? (
-          <button type="button" onClick={() => void stop()}>
+          <button type="button" onClick={() => void handleStop()}>
             停止
           </button>
         ) : isActivePurpose ? null : (

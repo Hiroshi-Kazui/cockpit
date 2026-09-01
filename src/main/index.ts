@@ -36,6 +36,7 @@ import { writeEvaluationReportFiles } from './evaluation/evaluationReportWriter'
 import {
   finalizeEvaluationError,
   finalizeEvaluationOk,
+  getLatestEvaluationForPurpose,
   insertPendingEvaluation,
   insertSkippedEvaluation,
   setEvaluationReportState
@@ -307,6 +308,17 @@ function createWindow(): void {
     getPurposeTitle: (purposeId) => getPurposeById(db, purposeId)?.title ?? null,
     listSessionsForPurpose: (purposeId) =>
       listSessionsForPurpose(db, purposeId).map((row) => ({ id: row.id, jsonlPath: row.jsonlPath })),
+    // M14 (R-6): the row an appeal disputes -- read before the new run inserts its own row.
+    getPreviousEvaluation: (purposeId) => {
+      const previous = getLatestEvaluationForPurpose(db, purposeId)
+      if (!previous) return null
+      return {
+        smoothness: previous.smoothness,
+        stress: previous.stress,
+        commCost: previous.commCost,
+        summary: previous.summary
+      }
+    },
     readSession: (sessionId, jsonlPath) =>
       readSpoolSessionForEvaluation(archiveRootDir(), sessionId, jsonlPath),
     insertPending: (params) => insertPendingEvaluation(db, params),

@@ -4,14 +4,17 @@
 import { useEffect, useState } from 'react'
 import type { PaneIndex } from '@shared/ipc'
 
-export function useArchiveWarning(paneIndex: PaneIndex): string | null {
+/** M14 (R-1): `resetKey` -- see useSessionTelemetry's identical parameter. Incremented by Pane.tsx when a
+ * completed purpose's pane is cleaned up on 停止, so the warning row does not outlive the session it was
+ * raised for. */
+export function useArchiveWarning(paneIndex: PaneIndex, resetKey = 0): string | null {
   const [message, setMessage] = useState<string | null>(null)
-  const [trackedPane, setTrackedPane] = useState(paneIndex)
+  const [tracked, setTracked] = useState({ paneIndex, resetKey })
 
   // A warning belongs to the pane it was raised for; switching panes clears it in the same commit as
   // the pane change, so pane A's archive error is never shown against pane B.
-  if (trackedPane !== paneIndex) {
-    setTrackedPane(paneIndex)
+  if (tracked.paneIndex !== paneIndex || tracked.resetKey !== resetKey) {
+    setTracked({ paneIndex, resetKey })
     setMessage(null)
   }
 

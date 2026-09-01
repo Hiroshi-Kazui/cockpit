@@ -38,6 +38,15 @@ export interface UsePtyPaneResult {
    * this session (ADR-0015 D-1). A no-op while `running` is false, so a caller cannot lose typed text into
    * a pty that was never told to run (R-7: the UI's own `disabled` is not the only guard). */
   sendText: (text: string, submit: boolean) => void
+  /** M14 (R-1/R-3, ADR-0016 D-2/D-3): empties this pane's terminal (buffer *and* scrollback) and clears
+   * any pty error, for the "completed purpose -> 停止" cleanup in Pane.tsx. Also suppresses whatever the
+   * just-killed pty still has in flight -- late `pty:data` and the `[claude exited: code=N]` notice would
+   * otherwise land on the freshly emptied screen, since `pty.kill`'s resolution and the exit event race --
+   * *and* whatever it already delivered but xterm.js has not parsed yet (see the implementation: `write()`
+   * is queued, not synchronous, so one `reset()` alone gets repainted over).
+   * The suppression is lifted by the next `start`. Never resizes the terminal (R-4): `reset()` keeps the
+   * current cols/rows, so ConPTY's own idea of the screen is untouched (ADR-0014). */
+  cleanup: () => void
 }
 
 function describeError(err: unknown): string {
@@ -51,6 +60,9 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
   const [running, setRunning] = useState(false)
   const runningRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
+  // M14 (ADR-0016 D-3): true from a `cleanup()` call until the next `start()` -- while set, nothing the
+  // dying pty still emits (output already in flight, the exit event) is written to the terminal.
+  const cleanedRef = useRef(false)
 
   useEffect(() => {
     runningRef.current = running
@@ -162,11 +174,22 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
   // Subscribe to this pane's pty output/exit events pushed from main.
   useEffect(() => {
     const unsubData = window.cockpit.pty.onData((event) => {
-      if (event.pane === paneIndex) termRef.current?.write(event.data)
+      if (event.pane !== paneIndex) return
+      // M14 (R-3): a pane cleaned up after "完了 -> 停止" no longer belongs to the pty being torn down.
+      // PtyManager.kill() deliberately keeps forwarding that process's remaining onData/onExit (see its
+      // generation-guard comment), and ConPTY hands node-pty whatever it had already buffered *after* the
+      // child is gone -- so without this guard the previous screen is repainted onto the terminal the app
+      // has just emptied, which is the reported "過去ログが表示されたまま". Lifted by the next `start`.
+      if (cleanedRef.current) return
+      termRef.current?.write(event.data)
     })
     const unsubExit = window.cockpit.pty.onExit((event) => {
       if (event.pane !== paneIndex) return
       setRunning(false)
+      // Same suppression as above -- `pty.kill`'s resolution (which drives the cleanup) and this exit
+      // event race each other, so the notice must not be printed onto an already-emptied pane.
+      // `setRunning(false)` stays unconditional: it is pane state, not screen content.
+      if (cleanedRef.current) return
       termRef.current?.writeln(`\r\n[claude exited: code=${event.exitCode}]`)
     })
     return () => {
@@ -178,6 +201,7 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
   const start = useCallback(
     async <T extends { pid: number | null }>(spawnFn: () => Promise<T>): Promise<T | null> => {
       setError(null)
+      cleanedRef.current = false // M14 (R-3): a new launch owns the terminal again
       try {
         const result = await spawnFn()
         // FIX B3 (review iter1): `pid === null` is a resolved (not thrown) "did not actually launch"
@@ -213,6 +237,29 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     }
   }, [paneIndex])
 
+  const cleanup = useCallback(() => {
+    cleanedRef.current = true
+    setError(null)
+    const term = termRef.current
+    if (!term) return
+    // Clearing twice is not redundant. xterm.js does not parse `write()` synchronously -- it queues the
+    // data and drains the queue in chunks across later task/frame boundaries -- so everything the pty
+    // emitted in the moments before the kill is typically still *unparsed* when we get here, and a plain
+    // `reset()` only empties the buffer that queue is about to repaint into. Measured against a pty
+    // flooding the pane (e2e/fixtures/fake-claude.js `#spew`): ~600 lines reappeared after the reset, which
+    // is the reported "過去ログが表示されたまま". So: reset now (the screen clears immediately in the common
+    // case), and reset again once the queue has drained past this point -- `write('', cb)` fires `cb`
+    // after the parser has consumed everything queued ahead of it, and the onData subscriber above stops
+    // enqueueing as soon as `cleanedRef` is set, so nothing can be queued behind it. `cleanedRef` is
+    // re-checked in the callback because `start` clears it: a pane the user has already relaunched owns
+    // its terminal again, and this late continuation must not wipe the new session's first output.
+    term.reset()
+    term.write('', () => {
+      if (!cleanedRef.current) return
+      termRef.current?.reset()
+    })
+  }, [])
+
   const focus = useCallback(() => {
     termRef.current?.focus()
   }, [])
@@ -225,5 +272,5 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
     if (submit) term.input('\r')
   }, [])
 
-  return { containerRef, running, error, start, stop, focus, sendText }
+  return { containerRef, running, error, start, stop, focus, sendText, cleanup }
 }

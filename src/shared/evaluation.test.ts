@@ -3,6 +3,7 @@ import {
   EVALUATION_INPUT_MAX_CHARS,
   buildEvaluationInput,
   buildEvaluationPrompt,
+  EVALUATION_APPEAL_MAX_CHARS,
   parseEvaluationResult,
   type EvaluationSessionInput
 } from './evaluation'
@@ -117,6 +118,42 @@ describe('buildEvaluationPrompt', () => {
 
   it('handles an empty purpose text without throwing', () => {
     expect(() => buildEvaluationPrompt('', 'body')).not.toThrow()
+  })
+
+  // M14 (R-6, ADR-0016 D-5): an appeal-driven re-evaluation must tell the model *what* the user disputes
+  // and *what it is disputing against* (the previous scores/summary), and must explicitly forbid simply
+  // agreeing with the appeal -- otherwise "異議申し立て" degenerates into "点数を上げる依頼".
+  it('embeds the appeal text, the disputed previous evaluation, and a do-not-simply-agree instruction', () => {
+    const prompt = buildEvaluationPrompt('READMEの整備', 'body', {
+      text: '実際には詰まらず進んだのでストレス度が高すぎる',
+      previous: { smoothness: 40, stress: 80, commCost: 70, summary: '苦戦していました' }
+    })
+    expect(prompt).toContain('異議申し立て')
+    expect(prompt).toContain('実際には詰まらず進んだのでストレス度が高すぎる')
+    expect(prompt).toContain('40')
+    expect(prompt).toContain('80')
+    expect(prompt).toContain('70')
+    expect(prompt).toContain('苦戦していました')
+    expect(prompt).toContain('無条件')
+  })
+
+  it('omits the previous-evaluation line when there is no previous evaluation to quote', () => {
+    const prompt = buildEvaluationPrompt('目的', 'body', { text: '体感と違う', previous: null })
+    expect(prompt).toContain('体感と違う')
+    expect(prompt).not.toContain('直前の評価')
+  })
+
+  it('treats a whitespace-only appeal as no appeal at all', () => {
+    const prompt = buildEvaluationPrompt('目的', 'body', { text: '      ', previous: null })
+    expect(prompt).toBe(buildEvaluationPrompt('目的', 'body'))
+  })
+
+  it('truncates an over-long appeal rather than letting it crowd out the transcript excerpt', () => {
+    const appealText = 'あ'.repeat(EVALUATION_APPEAL_MAX_CHARS + 500)
+    const prompt = buildEvaluationPrompt('目的', 'body', { text: appealText, previous: null })
+    expect(prompt).toContain('あ'.repeat(EVALUATION_APPEAL_MAX_CHARS))
+    expect(prompt).not.toContain('あ'.repeat(EVALUATION_APPEAL_MAX_CHARS + 1))
+    expect(prompt).toContain('(以下略)')
   })
 })
 

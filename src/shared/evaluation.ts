@@ -169,9 +169,70 @@ export function buildEvaluationInput(
  * argv (TD-5 injection invariant, pinned by evaluationRunner.test.ts the same way titleGenerator.test.ts
  * pins generateTitle's). `purposeText`/`promptBody` are user-authored/derived and are embedded verbatim;
  * that is safe here specifically because this function only ever produces a *string*, which the runner
- * writes to a pipe, never interpolates into a shell command line.
+ * writes to a pipe, never interpolates into a shell command line -- which is equally why M14's
+ * `appeal.text` (free text typed by the user) can be embedded here safely.
  */
-export function buildEvaluationPrompt(purposeText: string, promptBody: string): string {
+/** M14 (R-5/R-6, ADR-0016 D-5): what the user says the evaluation got wrong, plus the evaluation they
+ * are disputing -- embedded into the prompt of the *next* (brand-new, append-only) evaluation run.
+ * `previous` is null when the disputed row carries no scores to quote (e.g. an 'error' row). */
+export interface EvaluationAppealPrevious {
+  smoothness: number | null
+  stress: number | null
+  commCost: number | null
+  summary: string | null
+}
+
+export interface EvaluationAppeal {
+  text: string
+  previous: EvaluationAppealPrevious | null
+}
+
+/** D-5: an appeal is free text typed by the user and must not be able to crowd the transcript excerpt
+ * (EVALUATION_INPUT_MAX_CHARS) out of the prompt -- anything past this is dropped visibly ("(以下略)"),
+ * never silently. */
+export const EVALUATION_APPEAL_MAX_CHARS = 2000
+
+/** The "[ユーザーからの異議申し立て]" section of the prompt, or `''` when there is no usable appeal
+ * (absent, or whitespace-only -- callers guard too; this is the pure-function half of the same check).
+ * Never merely "the user says the score is wrong": the instruction deliberately forbids simply agreeing,
+ * so an appeal makes the model reweigh the evidence rather than buy a better score (ADR-0016 D-5). */
+function buildAppealSection(appeal: EvaluationAppeal | null): string {
+  if (appeal === null) return ''
+  const trimmed = appeal.text.trim()
+  if (trimmed.length === 0) return ''
+  const text =
+    trimmed.length > EVALUATION_APPEAL_MAX_CHARS
+      ? `${trimmed.slice(0, EVALUATION_APPEAL_MAX_CHARS)}…(以下略)`
+      : trimmed
+
+  const lines = ['[ユーザーからの異議申し立て]']
+  const previous = appeal.previous
+  if (previous !== null) {
+    const score = (value: number | null): string => (value === null ? '(なし)' : String(value))
+    lines.push(
+      `直前の評価: smoothness=${score(previous.smoothness)} / stress=${score(previous.stress)} / ` +
+        `commCost=${score(previous.commCost)}`
+    )
+    if (previous.summary !== null && previous.summary.trim().length > 0) {
+      lines.push(`直前の総評: ${previous.summary.trim()}`)
+    }
+  }
+  lines.push(`ユーザーの申し立て: ${text}`)
+  lines.push(
+    'この申し立てはユーザー本人の体感であり、見落としや事実誤認の指摘を含むことがあります。' +
+      '申し立てに無条件で迎合して点数を動かしてはいけません。上の抜粋の実データと突き合わせ、' +
+      '妥当な部分だけを反映し、データ上支持できない部分は元の判断を維持したうえで、' +
+      'どこを見直しどこを維持したかを総評に1文で書いてください。'
+  )
+  return lines.join('\n')
+}
+
+export function buildEvaluationPrompt(
+  purposeText: string,
+  promptBody: string,
+  appeal: EvaluationAppeal | null = null
+): string {
+  const appealSection = buildAppealSection(appeal)
   return [
     '以下はある「目的」に関する claude CLI とユーザーのやり取りの抜粋です。',
     'この目的の達成プロセスを、次の3軸で評価してください（各 0〜100 の整数）:',
@@ -190,7 +251,11 @@ export function buildEvaluationPrompt(purposeText: string, promptBody: string): 
     '',
     `目的: ${purposeText.trim().length > 0 ? purposeText : '(未設定)'}`,
     '',
-    promptBody
+    promptBody,
+    // M14 (R-6): placed *after* the transcript excerpt so the appeal reads as a comment on evidence the
+    // model has already seen. Contributes nothing at all when there is no appeal -- an ordinary
+    // completion-triggered run's prompt stays byte-identical to what it was before this milestone.
+    ...(appealSection.length > 0 ? ['', appealSection] : [])
   ].join('\n')
 }
 

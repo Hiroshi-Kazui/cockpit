@@ -101,6 +101,19 @@ class FakeDatabase {
       return
     }
 
+    // M14 (ADR-0016 D-4): additive column migration for `evaluations.appeal_text`.
+    m = /^ALTER TABLE (\w+) ADD COLUMN (\w+) (\w+)$/i.exec(s)
+    if (m) {
+      const table = this.tables.get(m[1])
+      if (!table) throw new Error(`unknown table in ALTER TABLE ADD COLUMN: ${s}`)
+      if (table.columns.some((c) => c.name === m![2])) {
+        throw new Error(`FakeDatabase: duplicate column name: ${m[2]}`)
+      }
+      table.columns.push({ name: m[2], pk: 0 })
+      for (const row of table.rows) row[m[2]] = null
+      return
+    }
+
     m = /^ALTER TABLE (\w+) RENAME TO (\w+)$/i.exec(s)
     if (m) {
       const table = this.tables.get(m[1])
@@ -405,11 +418,44 @@ describe('migrate() -- M9 evaluations table', () => {
         'suggestions_json',
         'input_stats_json',
         'last_error',
-        'report_state'
+        'report_state',
+        'appeal_text'
       ].sort()
     )
     expect(table!.columns.filter((c) => c.pk > 0).map((c) => c.name)).toEqual(['id'])
     expect(table!.rows).toEqual([])
+  })
+
+  // M14 (ADR-0016 D-4): a database created before this milestone has an `evaluations` table without
+  // `appeal_text`, and `CREATE TABLE IF NOT EXISTS` alone would never add it.
+  it('adds appeal_text to a pre-M14 evaluations table without touching its rows', () => {
+    const db = new FakeDatabase()
+    db.tables.set('evaluations', {
+      columns: [
+        { name: 'id', pk: 1 },
+        { name: 'purpose_id', pk: 0 },
+        { name: 'created_at', pk: 0 },
+        { name: 'status', pk: 0 }
+      ],
+      rows: [{ id: 'eval-old', purpose_id: 'purpose-1', created_at: 1, status: 'ok' }]
+    })
+
+    migrate(asDb(db))
+
+    const table = db.tables.get('evaluations')!
+    expect(table.columns.map((c) => c.name)).toContain('appeal_text')
+    expect(table.rows).toHaveLength(1)
+    expect(table.rows[0]).toMatchObject({ id: 'eval-old', status: 'ok', appeal_text: null })
+  })
+
+  it('does not re-add appeal_text when it is already present (idempotent)', () => {
+    const db = new FakeDatabase()
+    migrate(asDb(db))
+    expect(() => migrate(asDb(db))).not.toThrow()
+    const appealColumns = db.tables
+      .get('evaluations')!
+      .columns.filter((c) => c.name === 'appeal_text')
+    expect(appealColumns).toHaveLength(1)
   })
 
   it('is idempotent and lossless -- running migrate() again keeps existing rows untouched', () => {

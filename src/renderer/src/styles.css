@@ -1336,6 +1336,73 @@ body.is-pane-resizing {
   font-size: 12px;
 }
 
+/* M14 (R-5): the appeal box. Sits below the ordinary re-run action and is visually separated from it,
+   because it is a different act -- disagreeing with the result, not merely asking for another roll. */
+.evaluation-dialog__appeal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.evaluation-dialog__appeal h4 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.evaluation-dialog__appeal label {
+  font-size: 11px;
+  color: #9d9d9d;
+}
+
+.evaluation-dialog__appeal-text {
+  resize: vertical;
+  min-height: 54px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.evaluation-dialog__appeal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.evaluation-dialog__appeal-actions button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.evaluation-dialog__appeal-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.evaluation-dialog__appeal-actions .evaluation-dialog__hint {
+  font-size: 10.5px;
+}
+
+.evaluation-dialog__appeal-note {
+  font-size: 11px;
+  color: #9d9d9d;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  margin: 0;
+}
+
 .evaluation-dialog__disclaimer,
 .evaluation-dashboard__disclaimer {
   font-size: 10.5px;

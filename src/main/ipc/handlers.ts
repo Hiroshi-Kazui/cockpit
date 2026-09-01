@@ -61,6 +61,7 @@ import {
   setEvaluationModel,
   setEvaluationOutputRoot
 } from '../db/appSettingsRepo'
+import { EVALUATION_APPEAL_MAX_CHARS } from '../../shared/evaluation'
 import { isLayoutMode } from '../../shared/layout'
 import { getAllActivePurposes } from '../db/purposeRepo'
 import { getUsageSettings, setUsageSettings } from '../db/usageSettingsRepo'
@@ -519,7 +520,18 @@ export function registerIpcHandlers(
   // immediately; progress is observed via the evaluationUpdated push channel.
   ipcMain.handle(IpcChannels.evaluationRerun, (_event, req: EvaluationRerunRequest): void => {
     assertNonEmptyString(req.purposeId, 'purposeId')
-    evaluationCoordinator.rerun(req.purposeId)
+    // M14 (R-5): the appeal is optional. Validated here rather than trusted from the renderer -- a
+    // non-string is a caller bug, and an appeal longer than the prompt budget is rejected outright (the
+    // dialog's own `maxLength` already prevents it) instead of being silently stored in a form the prompt
+    // could never carry in full.
+    const appealText = req.appealText ?? null
+    if (appealText !== null) {
+      assertString(appealText, 'appealText')
+      if (appealText.length > EVALUATION_APPEAL_MAX_CHARS) {
+        throw new Error(`Invalid appealText: longer than ${EVALUATION_APPEAL_MAX_CHARS} characters`)
+      }
+    }
+    evaluationCoordinator.rerun(req.purposeId, appealText)
   })
 }
 

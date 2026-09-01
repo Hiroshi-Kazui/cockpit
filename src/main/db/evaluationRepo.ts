@@ -30,6 +30,9 @@ interface RawEvaluationRow {
   input_stats_json: string | null
   last_error: string | null
   report_state: string | null
+  /** M14 (ADR-0016 D-4): may be `undefined` at runtime for a row read from a database whose migration
+   * has not run yet in this process -- normalized to `null` by toSummary below (tolerant reader). */
+  appeal_text?: string | null
 }
 
 function isEvaluationStatus(value: string): value is EvaluationStatus {
@@ -82,7 +85,8 @@ function toSummary(row: RawEvaluationRow): EvaluationSummary {
     suggestions: parseSuggestionsJson(row.suggestions_json),
     inputStats: parseInputStatsJson(row.input_stats_json),
     lastError: row.last_error,
-    reportState: isReportState(row.report_state) ? row.report_state : null
+    reportState: isReportState(row.report_state) ? row.report_state : null,
+    appealText: row.appeal_text ?? null
   }
 }
 
@@ -91,6 +95,9 @@ export interface InsertPendingEvaluationParams {
   createdAt: number
   model: string | null
   inputStats: EvaluationInputStats
+  /** M14 (R-7): the appeal this run answers, or null for an ordinary completion-triggered run. Stored on
+   * the new row -- never written back onto the row being disputed (append-only, R-6). */
+  appealText: string | null
 }
 
 /** Inserts a new 'pending' row and immediately returns its summary so the caller (evaluationCoordinator)
@@ -104,16 +111,17 @@ export function insertPendingEvaluation(
   db.prepare(
     `INSERT INTO evaluations
        (id, purpose_id, created_at, model, status, smoothness, stress, comm_cost, summary,
-        suggestions_json, input_stats_json, last_error, report_state)
+        suggestions_json, input_stats_json, last_error, report_state, appeal_text)
      VALUES
        (@id, @purposeId, @createdAt, @model, 'pending', NULL, NULL, NULL, NULL,
-        NULL, @inputStatsJson, NULL, NULL)`
+        NULL, @inputStatsJson, NULL, NULL, @appealText)`
   ).run({
     id,
     purposeId: params.purposeId,
     createdAt: params.createdAt,
     model: params.model,
-    inputStatsJson: JSON.stringify(params.inputStats)
+    inputStatsJson: JSON.stringify(params.inputStats),
+    appealText: params.appealText
   })
   return toSummary(getRawById(db, id)!)
 }
@@ -123,6 +131,7 @@ export interface InsertSkippedEvaluationParams {
   createdAt: number
   model: string | null
   inputStats: EvaluationInputStats
+  appealText: string | null
 }
 
 /** D-8 "実質空の入力は LLM を呼ばず skipped で確定する": inserted directly in its terminal 'skipped'
@@ -135,16 +144,17 @@ export function insertSkippedEvaluation(
   db.prepare(
     `INSERT INTO evaluations
        (id, purpose_id, created_at, model, status, smoothness, stress, comm_cost, summary,
-        suggestions_json, input_stats_json, last_error, report_state)
+        suggestions_json, input_stats_json, last_error, report_state, appeal_text)
      VALUES
        (@id, @purposeId, @createdAt, @model, 'skipped', NULL, NULL, NULL, NULL,
-        NULL, @inputStatsJson, NULL, NULL)`
+        NULL, @inputStatsJson, NULL, NULL, @appealText)`
   ).run({
     id,
     purposeId: params.purposeId,
     createdAt: params.createdAt,
     model: params.model,
-    inputStatsJson: JSON.stringify(params.inputStats)
+    inputStatsJson: JSON.stringify(params.inputStats),
+    appealText: params.appealText
   })
   return toSummary(getRawById(db, id)!)
 }

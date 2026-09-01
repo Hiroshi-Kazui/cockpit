@@ -77,6 +77,22 @@ async function runHeadlessMode() {
   }
 
   if (stdin.includes('commCost')) {
+    // M14: an appeal-driven re-evaluation carries the appeal section built by buildEvaluationPrompt
+    // (shared/evaluation.ts). Answering it distinctly is what lets the E2E assert that the user's appeal
+    // actually reached the headless prompt -- not merely that a second evaluation ran.
+    if (stdin.includes('[ユーザーからの異議申し立て]')) {
+      process.stdout.write(
+        JSON.stringify({
+          smoothness: 88,
+          stress: 5,
+          commCost: 12,
+          summary: 'E2Eフェイク再評価: 異議を踏まえて見直しました',
+          suggestions: [{ category: 'user', text: 'E2E再評価の改善案' }]
+        }) + '\n'
+      )
+      process.exit(0)
+      return
+    }
     process.stdout.write(
       JSON.stringify({
         smoothness: 82,
@@ -242,6 +258,44 @@ async function runInteractiveMode() {
           step += 1
           if (step >= steps.length) clearInterval(timer)
         }, 300)
+        continue
+      }
+
+      // E2E (stop-cleanup-and-appeal.spec.ts): `#spew` floods the pty until this process is killed, so
+      // that killing it is guaranteed to leave output still in flight -- xterm.js parses `write()`s
+      // asynchronously and ConPTY keeps handing node-pty what it had already buffered after the child is
+      // gone, and neither may land on a pane the app has just cleaned up (M14 R-3). A quiet fake resolves
+      // that race in the app's favour by luck, which is how the original M14 suite passed against a defect
+      // the real claude CLI hits on every stop. Self-terminating: the flood outlives the pty it was
+      // written to, so it stops on the first failed/impossible write (ConPTY gone) and after a hard cap,
+      // otherwise the timer keeps this process -- and its lock on the session's cwd -- alive past the test.
+      // Not a user turn: no transcript or statusLine side effects.
+      if (message === '#spew') {
+        let n = 0
+        let ticks = 0
+        const spew = setInterval(() => {
+          ticks += 1
+          if (ticks > 2000 || process.stdout.writableEnded || process.stdout.destroyed) {
+            clearInterval(spew)
+            process.exit(0)
+            return
+          }
+          let out = ''
+          for (let i = 0; i < 40; i += 1) {
+            n += 1
+            out += `SPEW${n} 継続出力の行です\r\n`
+          }
+          try {
+            process.stdout.write(out)
+          } catch {
+            clearInterval(spew)
+            process.exit(0)
+          }
+        }, 5)
+        process.stdout.on('error', () => {
+          clearInterval(spew)
+          process.exit(0)
+        })
         continue
       }
 

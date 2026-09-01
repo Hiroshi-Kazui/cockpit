@@ -549,6 +549,10 @@ export interface EvaluationSummary {
   inputStats: EvaluationInputStats | null
   lastError: string | null
   reportState: EvaluationReportState
+  /** M14 (R-5/R-7, ADR-0016 D-4): the user's appeal ("この評価は体感と違う") that triggered this
+   * evaluation, or null for an ordinary completion-triggered run. Never rewritten -- an appeal produces a
+   * brand-new row (append-only), so this field identifies *which* row was produced under dispute. */
+  appealText: string | null
 }
 
 export interface EvaluationGetForPurposeRequest {
@@ -559,4 +563,9 @@ export interface EvaluationGetForPurposeRequest {
  * existing one -- fire-and-forget, same as the original completePurpose-triggered run (D-1/D-4). */
 export interface EvaluationRerunRequest {
   purposeId: string
+  /** M14 (R-5/R-6): free text stating how the evaluation missed the user's own experience. Omitted/null
+   * for a plain re-run. Whitespace-only is rejected main-side (handlers.ts) rather than silently treated
+   * as an appeal, and the text is truncated to EVALUATION_APPEAL_MAX_CHARS when embedded in the prompt
+   * (shared/evaluation.ts). */
+  appealText?: string | null
 }

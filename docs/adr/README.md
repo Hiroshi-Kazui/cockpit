@@ -19,6 +19,7 @@
 | 0013 | 新規セッション開始時の git 同期 | proposed | [0013-git-sync-on-session-launch.md](0013-git-sync-on-session-launch.md) |
 | 0014 | pty ホスティングを node-pty 同梱 ConPTY（useConptyDll）へ切替 | proposed | [0014-conpty-dll-hosting.md](0014-conpty-dll-hosting.md) |
 | 0015 | ペイン下部の口述入力欄と、そこから pty へ送る経路 | proposed | [0015-pane-dictation-input.md](0015-pane-dictation-input.md) |
+| 0016 | 完了済み目的の停止時クリーンナップと評価への異議申し立て | accepted | [0016-stop-cleanup-and-evaluation-appeal.md](0016-stop-cleanup-and-evaluation-appeal.md) |
 
 TD-1〜TD-7（2026-07-19 決定）は `docs/technical-decisions.md` に凍結のまま残す
 （コード・過去ログからの `TD-n` 参照を壊さないため）。ADR-0008 以降はこのディレクトリに追加する。

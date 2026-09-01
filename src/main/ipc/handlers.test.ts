@@ -602,8 +602,24 @@ describe('M9 evaluation IPC handlers', () => {
     const handler = registeredHandlers.get(IpcChannels.evaluationRerun)
 
     handler?.(undefined, { purposeId: 'purpose-1' })
-    expect(evaluationCoordinator.rerun).toHaveBeenCalledWith('purpose-1')
+    expect(evaluationCoordinator.rerun).toHaveBeenCalledWith('purpose-1', null)
 
     expect(() => handler?.(undefined, { purposeId: '' })).toThrow(/Invalid purposeId/)
+  })
+
+  // M14 (R-5): the appeal rides the same channel as a plain re-run.
+  it('evaluationRerun forwards an appeal and rejects a non-string / over-long one', () => {
+    const { evaluationCoordinator } = setup(() => false)
+    const handler = registeredHandlers.get(IpcChannels.evaluationRerun)
+
+    handler?.(undefined, { purposeId: 'purpose-1', appealText: '体感と違う' })
+    expect(evaluationCoordinator.rerun).toHaveBeenCalledWith('purpose-1', '体感と違う')
+
+    expect(() => handler?.(undefined, { purposeId: 'purpose-1', appealText: 42 })).toThrow(
+      /Invalid appealText/
+    )
+    expect(() =>
+      handler?.(undefined, { purposeId: 'purpose-1', appealText: 'あ'.repeat(2001) })
+    ).toThrow(/Invalid appealText/)
   })
 })
