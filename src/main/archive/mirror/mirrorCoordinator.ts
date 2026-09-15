@@ -95,6 +95,16 @@ export class MirrorCoordinator implements MirrorControlPort {
   private readonly retryDelays = new Map<string, number>()
   private readonly inFlight = new Set<string>()
   private readonly pendingRerun = new Set<string>()
+  // Per-session mutual exclusion between the two kinds of pass that both read-modify-write the *same*
+  // archive_mirror row: the resume verification (rebaselineSession) and the ordinary sync (runOnce).
+  // main/index.ts starts both back-to-back at startup (setOutputRoot(persistedRoot) then
+  // recoverOnStartup()), and each interleaves awaits on a destination that can be a slow network/cloud
+  // drive -- so without this, a verification that had already read the row went on to judge the
+  // destination's size *after* the sync pass had legitimately grown it, read that as an out-of-band
+  // modification, and sentinel-blocked a perfectly healthy session permanently (observed in the field:
+  // 214 of 228 sessions blocked in one startup). Each entry is a promise chain that never rejects; a
+  // task queued here only starts once the previous one for that session has fully settled.
+  private readonly sessionChain = new Map<string, Promise<void>>()
   // M7 followup (structure #2): while a backfill loop is running, per-session markSynced/recordError calls
   // below skip their individual onStatusChanged() push (each one would otherwise trigger a fresh
   // getStatusSummary() -- an O(session-count) scan of archive_mirror -- for every one of the N sessions
@@ -282,7 +292,12 @@ export class MirrorCoordinator implements MirrorControlPort {
    * the former is recorded as an ordinary (retryable) error and retried; the latter is sentinel'd and never
    * retried automatically.
    */
-  private async rebaselineSession(sessionId: string, root: string): Promise<void> {
+  private rebaselineSession(sessionId: string, root: string): Promise<void> {
+    return this.runExclusive(sessionId, () => this.rebaselinePass(sessionId, root))
+  }
+
+  /** rebaselineSession's body, run under that session's `sessionChain` lock -- never call it directly. */
+  private async rebaselinePass(sessionId: string, root: string): Promise<void> {
     // FIX (major, code review): captured here -- at the method's very entry, before any `await` -- and
     // used exclusively from here on, the same discipline `runOnce` already follows. Capturing `this.sink`
     // only *after* an await (as a prior revision did) would let a `setOutputRoot` call that lands during
@@ -506,6 +521,21 @@ export class MirrorCoordinator implements MirrorControlPort {
       return
     }
     this.inFlight.add(sessionId)
+    try {
+      await this.runExclusive(sessionId, () => this.syncPass(sessionId))
+    } finally {
+      this.inFlight.delete(sessionId)
+      if (this.pendingRerun.delete(sessionId)) {
+        void this.runOnce(sessionId)
+      }
+    }
+  }
+
+  /** runOnce's body, run under that session's `sessionChain` lock -- never call it directly. `currentRoot`
+   * / `sink` are re-read here rather than inherited from runOnce because a setOutputRoot may well have
+   * landed while this pass was queued behind another one for the same session. */
+  private async syncPass(sessionId: string): Promise<void> {
+    if (this.currentRoot === null || this.sink === null) return
     const root = this.currentRoot
     const sink = this.sink
     try {
@@ -524,12 +554,30 @@ export class MirrorCoordinator implements MirrorControlPort {
     } catch (err) {
       this.recordError(sessionId, root, err)
       this.scheduleRetry(sessionId, 'sync')
-    } finally {
-      this.inFlight.delete(sessionId)
-      if (this.pendingRerun.delete(sessionId)) {
-        void this.runOnce(sessionId)
-      }
     }
+  }
+
+  /**
+   * Serializes `task` against every other pass already queued for `sessionId`, so no two of them can
+   * interleave their awaits across a read-modify-write of that session's archive_mirror row (see
+   * `sessionChain`). The stored link deliberately swallows rejections -- it exists only to order the next
+   * task, never to propagate a failure into it -- while the returned promise still settles as `task` did,
+   * so callers awaiting a pass keep observing its real outcome.
+   */
+  private runExclusive(sessionId: string, task: () => Promise<void>): Promise<void> {
+    const previous = this.sessionChain.get(sessionId) ?? Promise.resolve()
+    const settled = previous.then(() => task())
+    const link = settled.then(
+      () => undefined,
+      () => undefined
+    )
+    this.sessionChain.set(sessionId, link)
+    void link.then(() => {
+      // Only the *last* task for this session clears the entry -- a later task that already chained onto
+      // this link must keep it in place, or it would start concurrently with the one after it.
+      if (this.sessionChain.get(sessionId) === link) this.sessionChain.delete(sessionId)
+    })
+    return settled
   }
 
   /** Schedules `operation` (defaulting to an ordinary `runOnce` sync retry) after an exponential backoff,
@@ -574,6 +622,13 @@ export class MirrorCoordinator implements MirrorControlPort {
 
     const existing = this.repo.get(sessionId, root)
     const syncedBytes = existing?.syncedBytes ?? 0
+    // Defense in depth against the sentinel reaching computeTranscriptMirrorDiff, whose
+    // "recorded progress exceeds spool size" branch would then both throw a message quoting the raw
+    // sentinel value (meaningless to a user) and, via recordError, overwrite the row's real diagnostic
+    // last_error with it. runOnce already refuses sentinel rows up front; this catches the row having been
+    // sentinel'd by another pass after that check, which the `sessionChain` lock now prevents but which
+    // must never silently corrupt the diagnostic if some future caller bypasses it.
+    if (isUnrecoverableSyncedBytes(syncedBytes)) return
 
     const diff = computeTranscriptMirrorDiff({ spoolSize, syncedBytes })
     if (diff.action === 'error') {

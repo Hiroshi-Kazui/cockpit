@@ -127,6 +127,66 @@ describe('MirrorCoordinator (spec §4.4.1, ADR-0008/ADR-0009)', () => {
     vi.useRealTimers()
   })
 
+  // Regression (startup race, observed in the field: 214 of 228 sessions sentinel-blocked in a single
+  // startup at once). main/index.ts calls setOutputRoot(persistedRoot) and then recoverOnStartup()
+  // back-to-back, so a session's rebaseline verification and its crash-recovery sync pass used to run
+  // concurrently against the same row. rebaselineSession read the row *before* its (slow, network-drive)
+  // sink.statTranscript await and then judged the destination's now-larger real size against that stale
+  // `recordedSyncedBytes` -- computeResumeVerificationRange reads "destination bigger than recorded" as a
+  // confirmed out-of-band modification and sentinel-blocks the row permanently, even though the sync pass
+  // that grew the destination was this very coordinator doing exactly what it should.
+  it('does not sentinel a healthy row when startup recovery syncs it while rebaseline is still verifying', async () => {
+    const repo = createFakeRepo()
+    const files = new Map<string, FakeSpoolFile>([
+      // The spool grew while the app was down: 100 bytes were already mirrored, 50 are new.
+      ['sess-1', { transcript: 'a'.repeat(150), metadata: null }]
+    ])
+    const sink = createFakeSink()
+    sink.transcripts.set('sess-1', 'a'.repeat(100))
+    repo.upsert({
+      sessionId: 'sess-1',
+      destRoot: '/out',
+      syncedBytes: 100,
+      metaSynced: true,
+      state: 'synced',
+      lastError: null,
+      updatedAt: 1
+    })
+
+    // Holds rebaselineSession's own destination stat open until the recovery sync pass has finished,
+    // reproducing the real ordering (a Google-Drive-backed root answers stat far slower than the 0ms
+    // recovery timer).
+    let releaseVerifyStat = (): void => {}
+    const verifyStatGate = new Promise<void>((resolve) => {
+      releaseVerifyStat = resolve
+    })
+    const realStat = sink.statTranscript
+    let statCalls = 0
+    sink.statTranscript = async (id): Promise<number | null> => {
+      statCalls += 1
+      if (statCalls === 1) await verifyStatGate
+      return realStat(id)
+    }
+
+    const coordinator = new MirrorCoordinator({
+      repo,
+      spool: createFakeSpool(files),
+      createSink: () => sink
+    })
+
+    coordinator.setOutputRoot('/out')
+    coordinator.recoverOnStartup()
+    await vi.advanceTimersByTimeAsync(0)
+    releaseVerifyStat()
+    await vi.advanceTimersByTimeAsync(5000)
+
+    const row = repo.get('sess-1', '/out')
+    expect(row?.syncedBytes).not.toBe(UNRECOVERABLE_SYNCED_BYTES)
+    expect(row?.state).toBe('synced')
+    expect(row?.lastError).toBeNull()
+    expect(sink.transcripts.get('sess-1')).toBe('a'.repeat(150))
+  })
+
   it('is fully inert while no output root is configured (no repo writes at all)', async () => {
     const repo = createFakeRepo()
     const files = new Map<string, FakeSpoolFile>([
