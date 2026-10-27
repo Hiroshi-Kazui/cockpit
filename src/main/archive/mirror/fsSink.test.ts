@@ -23,6 +23,13 @@ describe('createFsSink (M6, ADR-0008/D-3/D-5)', () => {
     await expect(sink.statTranscript('sess-1')).resolves.toBeNull()
   })
 
+  it('statTranscript throws (not null) while the output root itself is missing (drive not mounted yet)', async () => {
+    const sink = createFsSink(path.join(destRoot, 'unmounted-drive'))
+    await expect(sink.statTranscript('sess-1')).rejects.toThrow(
+      '出力先フォルダにアクセスできません'
+    )
+  })
+
   it('appendTranscript creates the session dir + file, and statTranscript reflects the new size', async () => {
     const sink = createFsSink(destRoot)
     await sink.appendTranscript('sess-1', 0, Buffer.from('{"a":1}\n'))

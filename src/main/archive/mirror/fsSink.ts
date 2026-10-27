@@ -42,9 +42,20 @@ export function createFsSink(destRoot: string): ArchiveSink {
         const stat = await fs.promises.stat(file)
         return stat.size
       } catch (err) {
-        if (isEnoent(err)) return null
-        throw err
+        if (!isEnoent(err)) throw err
       }
+      // A missing file only means "not mirrored yet" if the output root itself is reachable. When the root
+      // is gone too (e.g. Google Drive for Desktop not yet mounted at startup), every session would read as
+      // externally deleted and be permanently blocked -- throw instead so callers treat it as transient.
+      try {
+        await fs.promises.stat(destRoot)
+      } catch (rootErr) {
+        throw new Error(
+          `出力先フォルダにアクセスできません（ドライブ未接続の可能性があります）` +
+            `（output root unreachable: ${destRoot}: ${rootErr instanceof Error ? rootErr.message : String(rootErr)}）`
+        )
+      }
+      return null
     },
 
     async appendTranscript(sessionId, offset, buffer) {
