@@ -156,11 +156,29 @@ export function usePtyPane(paneIndex: PaneIndex): UsePtyPaneResult {
       })
     })
 
+    // Right-click paste. xterm.js itself never pastes on right-click (it only readies its textarea for a
+    // native context menu, which cockpit doesn't have), so outside of mouse-tracking mode the click did
+    // nothing. While claude tracks the mouse (its fullscreen renderer) the click is reported to claude,
+    // which pastes from the clipboard on its own -- pasting here too would paste twice, hence the guard.
+    const onContextMenu = (): void => {
+      if (!runningRef.current || term.modes.mouseTrackingMode !== 'none') return
+      navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (text !== '') term.paste(text)
+        })
+        .catch((err: unknown) => {
+          setError(describeError(err))
+        })
+    }
+    container.addEventListener('contextmenu', onContextMenu)
+
     const resizeObserver = new ResizeObserver(() => ensureRendererAndFit())
     resizeObserver.observe(container)
 
     return () => {
       disposed = true
+      container.removeEventListener('contextmenu', onContextMenu)
       dataDisposable.dispose()
       resizeDisposable.dispose()
       resizeObserver.disconnect()
