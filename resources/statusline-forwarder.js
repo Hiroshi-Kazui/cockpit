@@ -27,7 +27,9 @@ const PIPE_CONNECT_TIMEOUT_MS = 200
 // arbitrary external program we do not control -- bound how long we wait for it to close so a hung
 // chained command can never block claude's statusLine render indefinitely. Killed after this, and we
 // still resolve (best-effort, matching the pipe-forwarding half's own bounded timeout above).
-const CHAIN_TIMEOUT_MS = 5000
+// 20s, not 5s: a user's statusLine script that shells out to python many times was measured at
+// 6-16s on Windows, and cutting it off made the terminal's status line silently disappear.
+const CHAIN_TIMEOUT_MS = 20000
 
 function readStdin() {
   return new Promise((resolve) => {
